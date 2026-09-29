@@ -100,10 +100,10 @@ else
   done
 fi
 
-# --- Attente du modèle (le premier téléchargement -hf peut être long) ---
+# --- Attente du modèle (le premier téléchargement + mmproj peut être long) ---
 if ! health_ok; then
   echo "⏳ Chargement du modèle..."
-  for _ in $(seq 1 600); do
+  for _ in $(seq 1 1800); do
     health_ok && break
     if ! server_running; then
       echo "❌ llama-server s'est arrêté. Dernières lignes de $SERVER_LOG :"
