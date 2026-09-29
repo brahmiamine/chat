@@ -8,6 +8,14 @@
  */
 import type { ChatCompletionParams, HealthStatus, ProviderConfig, ServerInfo } from '../types';
 
+/** The response had started, then the connection dropped mid-stream (not a CORS issue). */
+export class StreamInterruptedError extends Error {
+  constructor() {
+    super('Stream interrupted');
+    this.name = 'StreamInterruptedError';
+  }
+}
+
 export class LLMApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -112,7 +120,14 @@ export async function* streamChat(
   let buf = '';
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<string>;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError' || signal.aborted) throw e;
+        throw new StreamInterruptedError();
+      }
+      const { done, value } = chunk;
       if (done) break;
       buf += value;
       let nl: number;

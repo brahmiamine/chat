@@ -1,6 +1,6 @@
 /** Maps any failure to a short, human message. Never exposes stack traces. */
 import type { ChatError } from '../types';
-import { isReachableIgnoringCors, LLMApiError } from './llmApi';
+import { isReachableIgnoringCors, LLMApiError, StreamInterruptedError } from './llmApi';
 
 export type AbortReason = 'user' | 'timeout' | null;
 
@@ -26,6 +26,9 @@ export function friendlyError(e: unknown, baseUrl: string, reason: AbortReason =
   const name = (e as { name?: string } | null)?.name;
   if (reason === 'timeout' || name === 'TimeoutError') {
     return { title: 'Le serveur met trop de temps à répondre.', hint: 'Le modèle est peut-être occupé ou surchargé. Réessayez dans un instant.' };
+  }
+  if (e instanceof StreamInterruptedError) {
+    return { title: 'La connexion a été coupée pendant la réponse.', hint: 'Le tunnel ou le réseau a interrompu le flux. Réessayez ; si cela se répète, vérifiez cloudflared.' };
   }
   if (e instanceof LLMApiError) {
     const st = e.status;
