@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { HealthStatus, ServerInfo, Settings } from '../types';
 import { llmApi } from '../services/llmApi';
-import { friendlyError, isMixedContent } from '../services/errors';
+import { diagnoseError, isMixedContent } from '../services/errors';
 
 const POLL_MS = 20_000;
 
@@ -86,7 +86,7 @@ export function useServerHealth(settings: Settings) {
         setTest({ state: 'fail', message: 'Le serveur a répondu de façon inattendue. Vérifiez l’URL.' });
       }
     } catch (e) {
-      const fe = friendlyError(e, cfg.baseUrl);
+      const fe = await diagnoseError(e, cfg.baseUrl);
       setHealth('offline');
       setTest({ state: 'fail', message: `${fe.title} ${fe.hint}` });
     }

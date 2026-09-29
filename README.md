@@ -26,6 +26,12 @@ Serveur par défaut : `https://searched-track-dsc-perhaps.trycloudflare.com` (ll
 Chaque push sur `main` lance `.github/workflows/deploy.yml`, qui construit l’application et la publie sur **https://brahmiamine.github.io/chat/**.
 Au premier déploiement, vérifiez dans *Settings → Pages* du dépôt que la source est **GitHub Actions**.
 
+**CORS :** le navigateur n’accepte la réponse que si llama-server autorise l’origine du site. Les versions récentes limitent CORS à `localhost` dès que les outils, MCP ou le mode agent sont activés. Dans ce cas, ajoutez :
+
+```bash
+llama-server ... --cors-origins https://brahmiamine.github.io
+```
+
 GitHub Pages est servi en HTTPS : l’API doit donc l’être aussi (c’est le cas du tunnel Cloudflare). L’URL d’un tunnel `trycloudflare.com` change à chaque redémarrage de `cloudflared` : mettez-la alors à jour dans *Paramètres → Connexion*.
 
 ## Fonctionnalités

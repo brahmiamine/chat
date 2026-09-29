@@ -1,8 +1,26 @@
 /** Maps any failure to a short, human message. Never exposes stack traces. */
 import type { ChatError } from '../types';
-import { LLMApiError } from './llmApi';
+import { isReachableIgnoringCors, LLMApiError } from './llmApi';
 
 export type AbortReason = 'user' | 'timeout' | null;
+
+export function corsError(): ChatError {
+  const origin = typeof location !== 'undefined' ? location.origin : '';
+  return {
+    title: 'Le serveur refuse les requêtes venant de ce site (CORS).',
+    hint: `Le serveur est joignable, mais n’autorise pas ${origin}. Relancez llama-server avec --cors-origins ${origin} (ou --cors-origins "*").`,
+  };
+}
+
+/**
+ * Like friendlyError, but when a request failed at the network level it probes
+ * the server with a CORS-free request to tell "unreachable" from "CORS-blocked".
+ */
+export async function diagnoseError(e: unknown, baseUrl: string, reason: AbortReason = null): Promise<ChatError> {
+  const isNetworkFailure = e instanceof TypeError && !reason && !isMixedContent(baseUrl) && navigator.onLine;
+  if (isNetworkFailure && (await isReachableIgnoringCors({ baseUrl }))) return corsError();
+  return friendlyError(e, baseUrl, reason);
+}
 
 export function friendlyError(e: unknown, baseUrl: string, reason: AbortReason = null): ChatError {
   const name = (e as { name?: string } | null)?.name;

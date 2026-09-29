@@ -137,4 +137,18 @@ export async function* streamChat(
   }
 }
 
-export const llmApi = { checkHealth, listModels, getServerInfo, streamChat, normalizeBaseUrl };
+/**
+ * Network-level probe that ignores CORS (`no-cors` yields an opaque response).
+ * If this succeeds while a normal request failed, the server is reachable but
+ * does not allow this page's origin.
+ */
+export async function isReachableIgnoringCors(cfg: ProviderConfig): Promise<boolean> {
+  try {
+    await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/health`, { mode: 'no-cors', signal: timeoutSignal(5000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const llmApi = { checkHealth, listModels, getServerInfo, streamChat, normalizeBaseUrl, isReachableIgnoringCors };

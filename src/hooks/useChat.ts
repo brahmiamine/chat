@@ -14,7 +14,7 @@ import type { AssistantMessage, AttachedFile, ChatError, Conversation, MessageSt
 import { llmApi } from '../services/llmApi';
 import { demoStream } from '../services/demoProvider';
 import { conversationDb } from '../services/db';
-import { friendlyError, type AbortReason } from '../services/errors';
+import { diagnoseError, type AbortReason } from '../services/errors';
 import { buildHistory, makeTitle, uid } from '../lib/chat';
 import { currentModel } from '../lib/settings';
 
@@ -150,7 +150,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       if (current.reason === 'user') status = 'stopped';
       else {
         status = 'error';
-        error = friendlyError(e, s.baseUrl, current.reason);
+        error = await diagnoseError(e, s.baseUrl, current.reason);
       }
     }
     clearTimeout(timer);
