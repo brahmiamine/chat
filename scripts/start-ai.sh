@@ -15,16 +15,26 @@ SERVER_LOG="$HOME/llama-server.log"
 TUNNEL_LOG="$HOME/cloudflared.log"
 URL_FILE="$HOME/ai-url.txt"
 
+# Recherche par ligne de commande (le nom du processus peut différer sur Android)
+LS_PAT='(^|/)llama-server( |$)'
+CF_PAT='(^|/)cloudflared tunnel'
+
 health_ok() { curl -s -m 3 "http://127.0.0.1:$PORT/health" | grep -q '"ok"'; }
-# -x : correspondance exacte sur le nom du processus (évite de viser un autre shell)
-server_running() { pgrep -x llama-server >/dev/null; }
-tunnel_running() { pgrep -x cloudflared >/dev/null; }
+ui_ok() { curl -s -m 3 "http://127.0.0.1:$PORT/" | grep -q '<title>Lueur</title>'; }
+server_running() { pgrep -f "$LS_PAT" >/dev/null; }
+tunnel_running() { pgrep -f "$CF_PAT" >/dev/null; }
+
+# Arrête un processus et attend qu'il soit vraiment terminé (15 s max, puis kill -9)
+stop_proc() {
+  pkill -f "$1" 2>/dev/null || return 0
+  for _ in $(seq 1 15); do pgrep -f "$1" >/dev/null || return 0; sleep 1; done
+  pkill -9 -f "$1" 2>/dev/null; sleep 1
+}
 tunnel_url() { grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | tail -1; }
 
 stop_all() {
-  pkill -x llama-server 2>/dev/null
-  pkill -x cloudflared 2>/dev/null
-  sleep 2
+  stop_proc "$LS_PAT"
+  stop_proc "$CF_PAT"
 }
 
 case "$1" in
@@ -37,17 +47,23 @@ command -v termux-wake-lock >/dev/null && termux-wake-lock
 
 # --- Interface web (branche dist du dépôt) ---
 if [ -d "$UI_DIR/.git" ]; then
-  git -C "$UI_DIR" pull -q --ff-only 2>/dev/null && echo "🎨 Interface à jour"
+  if git -C "$UI_DIR" pull -q --ff-only 2>/dev/null; then echo "🎨 Interface à jour"
+  else echo "⚠️  Mise à jour de l'interface impossible (version locale conservée)"; fi
 else
   echo "🎨 Téléchargement de l'interface..."
   git clone -q -b dist --depth 1 https://github.com/brahmiamine/chat "$UI_DIR" || echo "⚠️  Interface non téléchargée (l'API fonctionnera quand même)"
 fi
 
 # --- llama-server ---
-# Un serveur lancé sans --path (ancienne version du script) est remplacé.
-if server_running && ! pgrep -a -x llama-server | grep -q -- "--path"; then
-  echo "♻️  Ancien serveur sans interface détecté, redémarrage..."
-  pkill -x llama-server; sleep 2
+# Un serveur qui ne sert pas l'interface Lueur (lancé sans --path) est remplacé.
+if health_ok && ! ui_ok; then
+  echo "♻️  Serveur sans l'interface Lueur détecté, redémarrage..."
+  stop_proc "$LS_PAT"
+  if health_ok; then
+    echo "❌ Impossible d'arrêter l'ancien serveur. Processus :"
+    ps -eo pid,args | grep -i llama | grep -v grep
+    exit 1
+  fi
 fi
 
 if health_ok; then
@@ -71,7 +87,7 @@ fi
 if tunnel_running && [ -n "$(tunnel_url)" ]; then
   echo "🌐 Tunnel déjà actif"
 else
-  pkill -x cloudflared 2>/dev/null
+  stop_proc "$CF_PAT"
   echo "🌐 Ouverture du tunnel Cloudflare..."
   : > "$TUNNEL_LOG"
   nohup cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
@@ -95,6 +111,7 @@ if ! health_ok; then
   done
 fi
 health_ok && echo "✅ Modèle prêt"
+ui_ok || echo "⚠️  L'interface Lueur n'est pas servie (vérifiez $UI_DIR/index.html)"
 
 # --- URL ---
 URL="$(tunnel_url)"
