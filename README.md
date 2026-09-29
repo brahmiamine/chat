@@ -122,42 +122,53 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
-## Accès public : Serveo
+## Accès public : ngrok
 
-Lueur utilise désormais **Serveo** pour l'accès public gratuit. Le tunnel passe par SSH et ne nécessite pas de client spécifique supplémentaire.
+Lueur utilise désormais **ngrok** pour l'accès public HTTPS. Le tunnel pointe vers le router local sur `127.0.0.1:8080` et convient au streaming du chat.
 
-Le script `start-ai.sh` lance automatiquement :
+Installez ngrok sur Termux ARM64 :
 
 ```bash
-ssh \
-  -T \
-  -o BatchMode=yes \
-  -o StrictHostKeyChecking=accept-new \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
-  -o ExitOnForwardFailure=yes \
-  -R 80:127.0.0.1:8080 \
-  serveo.net
+cd ~
+curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz
+chmod +x ~/ngrok
 ```
 
-Serveo fournit une URL HTTPS publique, généralement sous `*.serveousercontent.com`. Le script récupère cette URL, l'enregistre dans `~/ai-url.txt` et vérifie automatiquement `/health`.
-
-Si Serveo renvoie un hostname dont le certificat TLS n'est pas encore exploitable, le script ferme le tunnel et effectue automatiquement une seconde tentative pour obtenir une nouvelle URL.
-
-Pour démarrer :
+Ajoutez ensuite votre authtoken ngrok (compte gratuit suffisant pour tester) :
 
 ```bash
-pkg install openssh -y
+~/ngrok config add-authtoken TON_TOKEN_NGROK
+```
+
+Ne stockez jamais cet authtoken dans GitHub.
+
+Puis démarrez Lueur :
+
+```bash
 ~/start-ai.sh restart
 ```
 
-Pour arrêter Lueur, le modèle et le tunnel :
+Le script lance automatiquement :
+
+```bash
+ngrok http 8080
+```
+
+Il récupère l'URL HTTPS depuis l'API locale ngrok sur `127.0.0.1:4040`, l'enregistre dans `~/ai-url.txt`, puis vérifie `/health`.
+
+Pour utiliser plus tard une URL ngrok réservée/stable, vous pouvez ajouter dans `~/.lueur.env` :
+
+```bash
+export LUEUR_NGROK_URL='https://votre-url.ngrok.app'
+```
+
+Le script arrête également les anciens tunnels Serveo, localhost.run et Cloudflare lors d'un redémarrage.
+
+Pour tout arrêter :
 
 ```bash
 ~/start-ai.sh stop
 ```
-
-Le script arrête également d'anciens tunnels Cloudflare ou localhost.run qui seraient encore actifs.
 
 ## Android / Termux : router multi-modèles
 
@@ -166,7 +177,7 @@ Le router officiel de `llama-server` dépend de `LLAMA_SUBPROCESS`. Ce support e
 Lueur utilise donc `scripts/model-router.py`, un petit router HTTP Python compatible Termux :
 
 ```text
-Serveo / Lueur :8080
+ngrok / Lueur :8080
         ↓
 router Python
         ↓
