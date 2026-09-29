@@ -49,6 +49,15 @@ git -C ~/lueur-ui pull
 cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080
 ```
 
+Ou, plus simple, le script `scripts/start-ai.sh` fait tout (interface, llama-server avec `--path` et `--cors-origins`, tunnel) et affiche l’URL :
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/start-ai.sh -o ~/start-ai.sh && chmod +x ~/start-ai.sh
+~/start-ai.sh            # démarrer / afficher l’URL
+~/start-ai.sh restart    # tout redémarrer
+~/start-ai.sh stop       # tout arrêter
+```
+
 Ouvrez ensuite directement l’URL `https://…trycloudflare.com` affichée par cloudflared (ou `http://127.0.0.1:8080` sur le téléphone). La branche `dist` est reconstruite à chaque push sur `main`.
 
 ## Fonctionnalités
