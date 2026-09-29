@@ -34,6 +34,23 @@ llama-server ... --cors-origins https://brahmiamine.github.io
 
 GitHub Pages est servi en HTTPS : l’API doit donc l’être aussi (c’est le cas du tunnel Cloudflare). L’URL d’un tunnel `trycloudflare.com` change à chaque redémarrage de `cloudflared` : mettez-la alors à jour dans *Paramètres → Connexion*.
 
+## Servir l’application depuis llama-server (recommandé avec un tunnel)
+
+llama-server peut servir l’application lui-même. L’interface et l’API ont alors la même adresse : **aucun problème de CORS**, et rien à reconfigurer quand l’URL du tunnel change (l’application utilise automatiquement sa propre adresse).
+
+```bash
+# une seule fois (Termux : pkg install git)
+git clone -b dist --depth 1 https://github.com/brahmiamine/chat ~/lueur-ui
+# pour mettre à jour plus tard
+git -C ~/lueur-ui pull
+
+./build/bin/llama-server -hf mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M \
+  --host 0.0.0.0 --port 8080 -c 4096 --path ~/lueur-ui
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080
+```
+
+Ouvrez ensuite directement l’URL `https://…trycloudflare.com` affichée par cloudflared (ou `http://127.0.0.1:8080` sur le téléphone). La branche `dist` est reconstruite à chaque push sur `main`.
+
 ## Fonctionnalités
 
 - Réponses en streaming (SSE) affichées au plus une fois par frame, bouton **Stop** et touche Échap, délai d’inactivité de 90 s

@@ -9,9 +9,22 @@ export const DEFAULT_MODELS: ModelEntry[] = [
 
 export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 2048, contextSize: 8192 };
 
+/**
+ * When the app is served by llama-server itself (`llama-server --path dist`),
+ * the API lives on the same origin: no CORS, and no URL to configure even when
+ * the tunnel address changes. GitHub Pages and the Vite dev/preview servers
+ * keep the configured remote default.
+ */
+export function isServedByLlamaServer(): boolean {
+  if (typeof location === 'undefined' || env.DEV) return false;
+  return !/\.github\.io$/i.test(location.hostname) && location.port !== '4173';
+}
+
+const REMOTE_DEFAULT_URL = env.VITE_LLM_BASE_URL || 'https://below-cancer-loads-dat.trycloudflare.com';
+
 export const DEFAULT_SETTINGS: Settings = {
   provider: 'openai-compatible',
-  baseUrl: env.VITE_LLM_BASE_URL || 'https://below-cancer-loads-dat.trycloudflare.com',
+  baseUrl: isServedByLlamaServer() ? location.origin : REMOTE_DEFAULT_URL,
   apiKey: env.VITE_LLM_API_KEY || '',
   models: DEFAULT_MODELS,
   modelId: DEFAULT_MODELS[0].id,
