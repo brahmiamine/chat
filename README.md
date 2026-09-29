@@ -44,8 +44,9 @@ git clone -b dist --depth 1 https://github.com/brahmiamine/chat ~/lueur-ui
 # pour mettre à jour plus tard
 git -C ~/lueur-ui pull
 
-./build/bin/llama-server -hf lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M \
-  --host 127.0.0.1 --port 8080 -c 4096 -np 1 --mmproj-auto --path ~/lueur-ui
+# Le script scripts/start-ai.sh génère un fichier de presets avec Qwen + Gemma,
+# puis lance llama-server en mode router avec --models-max 1.
+~/start-ai.sh
 cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080
 ```
 
@@ -73,7 +74,7 @@ Ouvrez ensuite directement l’URL `https://…trycloudflare.com` affichée par 
 - Mise en page responsive : tiroir sur mobile, prise en compte du clavier iOS/Android, zones tactiles d’au moins 44 px
 - Entrée pour envoyer, Maj + Entrée pour aller à la ligne, ⌘/Ctrl N (ou ⇧⌘O) pour une nouvelle conversation
 - Pièces jointes **image, PDF et texte/code** : images envoyées au modèle vision ; texte des PDF extrait localement avec PDF.js ; PDF scannés convertis en images (jusqu’aux 3 premières pages)
-- Modèle par défaut **Qwen3.5 4B Vision Q4_K_M**, adapté au téléphone pour chat, rédaction, coding et vision
+- Router llama.cpp avec deux modèles adaptés au téléphone : **Qwen3.5 4B Vision Q4_K_M** et **Gemma 3 4B Vision Q4_K_M** ; `--models-max 1` limite la RAM à un modèle chargé à la fois
 - Mode démo hors ligne
 
 ## Architecture
