@@ -1,46 +1,50 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Lueur + llama.cpp router + Cloudflare Tunnel
+# Lueur + router Python Android + llama.cpp + Cloudflare Tunnel
 #
-# Modèles :
-#   - Qwen3.5 4B Vision Q4_K_M
-#   - Gemma 3 4B Vision Q4_K_M
-#
-# Le routeur ne garde qu'un modèle chargé à la fois (--models-max 1),
-# ce qui est adapté à un téléphone d'environ 10 Go de RAM.
+# Le router officiel de llama.cpp dépend de LLAMA_SUBPROCESS, qui ne compile
+# pas correctement sur Android/Bionic. Cette version utilise un petit router
+# Python compatible Termux et garde un seul llama-server chargé à la fois.
 #
 # Usage :
 #   ~/start-ai.sh
 #   ~/start-ai.sh restart
 #   ~/start-ai.sh stop
 
-QWEN_MODEL="lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
-GEMMA_MODEL="ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"
-PHI_MODEL="bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M"
-LLAMA_MODEL="bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"
-SMOL_MODEL="bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M"
-DEEPSEEK_MODEL="bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M"
-CODER_MODEL="bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M"
-
 PORT=8080
+MODEL_PORT=8081
 CTX=4096
+
 UI_DIR="$HOME/lueur-ui"
 LLAMA_DIR="$HOME/llama.cpp"
-PRESET_FILE="$HOME/lueur-models.ini"
-SERVER_LOG="$HOME/llama-server.log"
+ROUTER_SCRIPT="$HOME/lueur-router.py"
+
+ROUTER_LOG="$HOME/lueur-router.log"
+MODEL_LOG="$HOME/llama-model.log"
 TUNNEL_LOG="$HOME/cloudflared.log"
 URL_FILE="$HOME/ai-url.txt"
 
+ROUTER_PAT='lueur-router\.py'
 LS_PAT='(^|/)llama-server( |$)'
 CF_PAT='(^|/)cloudflared tunnel'
 
-health_ok() { curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; }
-ui_ok() { curl -s -m 3 "http://127.0.0.1:$PORT/" | grep -q '<title>Lueur</title>'; }
-server_running() { pgrep -f "$LS_PAT" >/dev/null; }
-tunnel_running() { pgrep -f "$CF_PAT" >/dev/null; }
-tunnel_url() { grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | tail -1; }
+health_ok() {
+  curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
+}
 
-router_build_enabled() {
-  grep -q '^LLAMA_SUBPROCESS:BOOL=ON$' "$LLAMA_DIR/build/CMakeCache.txt" 2>/dev/null
+ui_ok() {
+  curl -s -m 3 "http://127.0.0.1:$PORT/" | grep -q '<title>Lueur</title>'
+}
+
+router_running() {
+  pgrep -f "$ROUTER_PAT" >/dev/null 2>&1
+}
+
+tunnel_running() {
+  pgrep -f "$CF_PAT" >/dev/null 2>&1
+}
+
+tunnel_url() {
+  grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | tail -1
 }
 
 stop_proc() {
@@ -49,11 +53,13 @@ stop_proc() {
     pgrep -f "$1" >/dev/null || return 0
     sleep 1
   done
-  pkill -9 -f "$1" 2>/dev/null
+  pkill -9 -f "$1" 2>/dev/null || true
   sleep 1
 }
 
 stop_all() {
+  # Le router arrête normalement son llama-server enfant.
+  stop_proc "$ROUTER_PAT"
   stop_proc "$LS_PAT"
   stop_proc "$CF_PAT"
 }
@@ -61,7 +67,7 @@ stop_all() {
 case "${1:-}" in
   stop)
     stop_all
-    echo "🛑 Routeur IA et tunnel arrêtés"
+    echo "🛑 Lueur, modèle IA et tunnel arrêtés"
     exit 0
     ;;
   restart)
@@ -69,24 +75,25 @@ case "${1:-}" in
     ;;
 esac
 
-command -v termux-wake-lock >/dev/null && termux-wake-lock 2>/dev/null || true
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null || true
 
-# Le router officiel de llama.cpp utilise des sous-processus.
-# llama.cpp désactive LLAMA_SUBPROCESS par défaut sur Android ; Termux doit donc
-# avoir été compilé explicitement avec -DLLAMA_SUBPROCESS=ON.
-if ! router_build_enabled; then
-  echo "❌ Ce build llama.cpp n'a pas le support subprocess requis par le router."
+if ! command -v python >/dev/null 2>&1; then
+  echo "❌ Python n'est pas installé dans Termux."
+  echo "Installe-le avec :"
+  echo "  pkg install python -y"
+  exit 1
+fi
+
+if [ ! -x "$LLAMA_DIR/build/bin/llama-server" ]; then
+  echo "❌ llama-server introuvable : $LLAMA_DIR/build/bin/llama-server"
   echo
-  echo "Sur Termux, exécute une fois :"
-  echo
+  echo "Compile llama.cpp en mode Android normal :"
   echo "  cd $LLAMA_DIR"
   echo "  git pull --ff-only"
-  echo "  cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=ON"
+  echo "  rm -rf build"
+  echo "  cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=OFF"
   echo "  cmake --build build -j2 --target llama-server"
-  echo
-  echo "Puis relance :"
-  echo "  ~/start-ai.sh restart"
-  exit 2
+  exit 1
 fi
 
 # --- Interface Lueur ---
@@ -100,78 +107,44 @@ if [ -d "$UI_DIR/.git" ]; then
 else
   echo "🎨 Téléchargement de l'interface..."
   git clone -q -b dist --depth 1 https://github.com/brahmiamine/chat "$UI_DIR" \
-    || echo "⚠️  Interface non téléchargée (l'API fonctionnera quand même)"
+    || { echo "❌ Interface non téléchargée"; exit 1; }
 fi
 
-# --- Presets du router ---
-cat > "$PRESET_FILE" <<EOF
-version = 1
-
-[*]
-c = $CTX
-np = 1
-jinja = true
-load-on-startup = false
-dedup-cache-models = true
-
-[$QWEN_MODEL]
-hf-repo = $QWEN_MODEL
-
-[$GEMMA_MODEL]
-hf-repo = $GEMMA_MODEL
-
-[$PHI_MODEL]
-hf-repo = $PHI_MODEL
-
-[$LLAMA_MODEL]
-hf-repo = $LLAMA_MODEL
-
-[$SMOL_MODEL]
-hf-repo = $SMOL_MODEL
-
-[$DEEPSEEK_MODEL]
-hf-repo = $DEEPSEEK_MODEL
-
-[$CODER_MODEL]
-hf-repo = $CODER_MODEL
-EOF
-
-# Remplace un ancien serveur mono-modèle par le router.
-if server_running && ! pgrep -af "$LS_PAT" | grep -q -- "--models-preset"; then
-  echo "♻️  Ancien serveur mono-modèle détecté, passage en mode router..."
-  stop_proc "$LS_PAT"
+# --- Router Python Android-compatible ---
+echo "🧭 Mise à jour du router..."
+if ! curl -fsSL https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/model-router.py \
+  -o "$ROUTER_SCRIPT"; then
+  echo "❌ Impossible de télécharger le router"
+  exit 1
 fi
+chmod +x "$ROUTER_SCRIPT"
 
-# --- llama.cpp router ---
-if health_ok && server_running; then
+if health_ok && router_running; then
   echo "✅ Router IA déjà actif"
-elif server_running; then
-  echo "⏳ Router déjà lancé..."
 else
-  echo "🤖 Démarrage du router multi-modèles..."
-  cd "$LLAMA_DIR" || { echo "❌ Dossier $LLAMA_DIR introuvable"; exit 1; }
+  stop_proc "$ROUTER_PAT"
+  stop_proc "$LS_PAT"
 
-  : > "$SERVER_LOG"
+  echo "🤖 Démarrage du router multi-modèles Android..."
+  : > "$ROUTER_LOG"
 
-  nohup ./build/bin/llama-server \
-    --models-preset "$PRESET_FILE" \
-    --models-max 1 \
-    --models-autoload \
-    --host 127.0.0.1 \
-    --port "$PORT" \
-    --path "$UI_DIR" \
-    --cors-origins "https://brahmiamine.github.io" \
-    > "$SERVER_LOG" 2>&1 &
-fi
+  nohup env \
+    LUEUR_ROUTER_HOST=127.0.0.1 \
+    LUEUR_ROUTER_PORT="$PORT" \
+    LUEUR_MODEL_PORT="$MODEL_PORT" \
+    LUEUR_CTX="$CTX" \
+    LUEUR_UI_DIR="$UI_DIR" \
+    LUEUR_LLAMA_DIR="$LLAMA_DIR" \
+    LUEUR_MODEL_LOG="$MODEL_LOG" \
+    python "$ROUTER_SCRIPT" \
+    > "$ROUTER_LOG" 2>&1 &
 
-# --- Attendre que le router HTTP soit prêt ---
-if ! health_ok; then
   echo "⏳ Initialisation du router..."
-  for _ in $(seq 1 120); do
+  for _ in $(seq 1 60); do
     health_ok && break
-    if ! server_running; then
-      echo "❌ llama-server s'est arrêté. Dernières lignes :"
-      tail -n 30 "$SERVER_LOG"
+    if ! router_running; then
+      echo "❌ Le router s'est arrêté. Dernières lignes :"
+      tail -n 30 "$ROUTER_LOG"
       exit 1
     fi
     sleep 1
@@ -179,8 +152,8 @@ if ! health_ok; then
 fi
 
 if ! health_ok; then
-  echo "❌ Router non disponible après 2 minutes"
-  tail -n 30 "$SERVER_LOG"
+  echo "❌ Router non disponible"
+  tail -n 30 "$ROUTER_LOG"
   exit 1
 fi
 
@@ -211,7 +184,7 @@ URL="$(tunnel_url)"
 
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🤖 Modèles disponibles :"
+echo "🤖 7 modèles disponibles :"
 echo "   1. Qwen3.5 4B Vision"
 echo "   2. Gemma 3 4B Vision"
 echo "   3. Phi-4 Mini 3.8B"
@@ -220,8 +193,8 @@ echo "   5. SmolLM3 3B"
 echo "   6. DeepSeek R1 1.5B"
 echo "   7. Qwen2.5 Coder 3B"
 echo
-echo "💾 Un seul modèle sera chargé en RAM à la fois."
-echo "   Au premier choix d'un modèle, son téléchargement peut prendre plusieurs minutes."
+echo "💾 Un seul modèle est chargé en RAM à la fois."
+echo "📥 Le premier appel à un modèle peut déclencher son téléchargement."
 echo
 
 if [ -n "$URL" ]; then
@@ -241,9 +214,6 @@ fi
 
 echo "📱 Local : http://127.0.0.1:$PORT"
 echo
-echo "Tester les modèles :"
-echo "curl http://127.0.0.1:$PORT/models"
-echo
-echo "Logs :"
-echo "tail -f $SERVER_LOG"
+echo "Logs router : tail -f $ROUTER_LOG"
+echo "Logs modèle : tail -f $MODEL_LOG"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
