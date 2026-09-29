@@ -122,6 +122,41 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
+## Accès public : Cloudflare Named Tunnel
+
+Lueur n'utilise plus les Quick Tunnels `*.trycloudflare.com` pour l'usage normal : Cloudflare indique que les Quick Tunnels ne prennent pas en charge Server-Sent Events (SSE), alors que le chat de Lueur repose sur du streaming SSE.
+
+Créez un **Cloudflare Tunnel nommé / remotely-managed** depuis le tableau de bord Cloudflare, puis configurez un Public Hostname qui pointe vers :
+
+```text
+http://127.0.0.1:8080
+```
+
+Sur Termux, stockez le token du tunnel et l'URL publique dans `~/.lueur.env` :
+
+```bash
+cat > ~/.lueur.env <<'EOF'
+export CLOUDFLARE_TUNNEL_TOKEN='COLLEZ_ICI_LE_TOKEN_DU_TUNNEL'
+export LUEUR_PUBLIC_URL='https://ai.example.com'
+EOF
+
+chmod 600 ~/.lueur.env
+```
+
+Puis relancez :
+
+```bash
+~/start-ai.sh restart
+```
+
+Le script lance alors :
+
+```bash
+cloudflared tunnel --protocol auto run --token "$CLOUDFLARE_TUNNEL_TOKEN"
+```
+
+`auto` privilégie QUIC et retombe sur HTTP/2 si UDP n'est pas disponible. Le hostname reste stable entre les redémarrages.
+
 ## Android / Termux : router multi-modèles
 
 Le router officiel de `llama-server` dépend de `LLAMA_SUBPROCESS`. Ce support est désactivé par défaut sur Android et ne compile pas actuellement sur Bionic/Termux à cause de `posix_spawn_file_actions_addchdir_np`.
