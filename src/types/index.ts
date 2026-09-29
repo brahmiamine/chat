@@ -69,7 +69,7 @@ export interface ChatCompletionParams {
 }
 
 export interface ProviderConfig {
-  /** Server root, e.g. http://192.168.1.98:8080 (a trailing /v1 is tolerated). */
+  /** Server root, e.g. https://…trycloudflare.com (a trailing /v1 or /v1/chat/completions is tolerated). */
   baseUrl: string;
   apiKey?: string;
 }

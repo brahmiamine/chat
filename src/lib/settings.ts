@@ -11,7 +11,7 @@ export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, m
 
 export const DEFAULT_SETTINGS: Settings = {
   provider: 'openai-compatible',
-  baseUrl: env.VITE_LLM_BASE_URL || 'http://192.168.1.98:8080',
+  baseUrl: env.VITE_LLM_BASE_URL || 'https://searched-track-dsc-perhaps.trycloudflare.com',
   apiKey: env.VITE_LLM_API_KEY || '',
   models: DEFAULT_MODELS,
   modelId: DEFAULT_MODELS[0].id,

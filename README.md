@@ -17,9 +17,16 @@ Côté serveur, lancez llama-server en écoute sur le réseau :
 llama-server -m Qwen3-4B-Instruct-2507-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --ctx-size 8192
 ```
 
-Serveur par défaut : `http://192.168.1.98:8080`. Vous pouvez le modifier dans **Paramètres → Connexion**, ou fixer d’autres valeurs initiales dans un fichier `.env.local` (voir `.env.example`).
+Serveur par défaut : `https://searched-track-dsc-perhaps.trycloudflare.com` (llama-server exposé via un tunnel Cloudflare). L’URL racine ou l’endpoint complet `…/v1/chat/completions` sont acceptés. Vous pouvez le modifier dans **Paramètres → Connexion**, ou fixer d’autres valeurs initiales dans un fichier `.env.local` (voir `.env.example`).
 
 > **HTTPS :** un navigateur bloque les appels d’une page HTTPS vers un serveur HTTP (*mixed content*). Servez l’application en HTTP sur le LAN, ou placez llama-server derrière un proxy HTTPS.
+
+## Déploiement GitHub Pages
+
+Chaque push sur `main` lance `.github/workflows/deploy.yml`, qui construit l’application et la publie sur **https://brahmiamine.github.io/chat/**.
+Au premier déploiement, vérifiez dans *Settings → Pages* du dépôt que la source est **GitHub Actions**.
+
+GitHub Pages est servi en HTTPS : l’API doit donc l’être aussi (c’est le cas du tunnel Cloudflare). L’URL d’un tunnel `trycloudflare.com` change à chaque redémarrage de `cloudflared` : mettez-la alors à jour dans *Paramètres → Connexion*.
 
 ## Fonctionnalités
 

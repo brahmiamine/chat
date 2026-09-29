@@ -17,9 +17,9 @@ export class LLMApiError extends Error {
   }
 }
 
-/** Server root without trailing slashes or `/v1`. */
+/** Server root: tolerates a pasted `/v1` or full `/v1/chat/completions` endpoint. */
 export function normalizeBaseUrl(url: string): string {
-  return String(url || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  return String(url || '').trim().replace(/\/+$/, '').replace(/\/v1(\/chat\/completions)?$/, '');
 }
 
 function authHeaders(cfg: ProviderConfig): Record<string, string> {
