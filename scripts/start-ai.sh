@@ -15,6 +15,11 @@
 
 QWEN_MODEL="lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
 GEMMA_MODEL="ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"
+PHI_MODEL="bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M"
+LLAMA_MODEL="bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"
+SMOL_MODEL="bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M"
+DEEPSEEK_MODEL="bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M"
+CODER_MODEL="bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M"
 
 PORT=8080
 CTX=4096
@@ -90,6 +95,21 @@ hf-repo = $QWEN_MODEL
 
 [$GEMMA_MODEL]
 hf-repo = $GEMMA_MODEL
+
+[$PHI_MODEL]
+hf-repo = $PHI_MODEL
+
+[$LLAMA_MODEL]
+hf-repo = $LLAMA_MODEL
+
+[$SMOL_MODEL]
+hf-repo = $SMOL_MODEL
+
+[$DEEPSEEK_MODEL]
+hf-repo = $DEEPSEEK_MODEL
+
+[$CODER_MODEL]
+hf-repo = $CODER_MODEL
 EOF
 
 # Remplace un ancien serveur mono-modèle par le router.
@@ -104,7 +124,7 @@ if health_ok && server_running; then
 elif server_running; then
   echo "⏳ Router déjà lancé..."
 else
-  echo "🤖 Démarrage du router Qwen + Gemma..."
+  echo "🤖 Démarrage du router multi-modèles..."
   cd "$LLAMA_DIR" || { echo "❌ Dossier $LLAMA_DIR introuvable"; exit 1; }
 
   : > "$SERVER_LOG"
@@ -159,6 +179,11 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "🤖 Modèles disponibles :"
 echo "   1. Qwen3.5 4B Vision"
 echo "   2. Gemma 3 4B Vision"
+echo "   3. Phi-4 Mini 3.8B"
+echo "   4. Llama 3.2 3B"
+echo "   5. SmolLM3 3B"
+echo "   6. DeepSeek R1 1.5B"
+echo "   7. Qwen2.5 Coder 3B"
 echo
 echo "💾 Un seul modèle sera chargé en RAM à la fois."
 echo "   Au premier choix d'un modèle, son téléchargement peut prendre plusieurs minutes."
