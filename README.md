@@ -122,40 +122,40 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
-## Accès public : Cloudflare Named Tunnel
+## Accès public : localhost.run
 
-Lueur n'utilise plus les Quick Tunnels `*.trycloudflare.com` pour l'usage normal : Cloudflare indique que les Quick Tunnels ne prennent pas en charge Server-Sent Events (SSE), alors que le chat de Lueur repose sur du streaming SSE.
+Lueur utilise désormais **localhost.run** pour l'accès public gratuit. Aucun compte ni client spécifique n'est requis : le tunnel passe par SSH.
 
-Créez un **Cloudflare Tunnel nommé / remotely-managed** depuis le tableau de bord Cloudflare, puis configurez un Public Hostname qui pointe vers :
-
-```text
-http://127.0.0.1:8080
-```
-
-Sur Termux, stockez le token du tunnel et l'URL publique dans `~/.lueur.env` :
+Le script `start-ai.sh` lance automatiquement :
 
 ```bash
-cat > ~/.lueur.env <<'EOF'
-export CLOUDFLARE_TUNNEL_TOKEN='COLLEZ_ICI_LE_TOKEN_DU_TUNNEL'
-export LUEUR_PUBLIC_URL='https://ai.example.com'
-EOF
-
-chmod 600 ~/.lueur.env
+ssh \
+  -T \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=accept-new \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -R 80:127.0.0.1:8080 \
+  nokey@localhost.run
 ```
 
-Puis relancez :
+localhost.run fournit automatiquement une URL HTTPS publique, typiquement sous `*.lhr.life` ou `*.localhost.run`. Le script récupère cette URL, l'enregistre dans `~/ai-url.txt` et l'affiche avec les endpoints API.
+
+Pour démarrer :
 
 ```bash
+pkg install openssh -y
 ~/start-ai.sh restart
 ```
 
-Le script lance alors :
+Pour arrêter Lueur, le modèle et le tunnel :
 
 ```bash
-cloudflared tunnel --protocol auto run --token "$CLOUDFLARE_TUNNEL_TOKEN"
+~/start-ai.sh stop
 ```
 
-`auto` privilégie QUIC et retombe sur HTTP/2 si UDP n'est pas disponible. Le hostname reste stable entre les redémarrages.
+Le mode gratuit change périodiquement de domaine et impose une limite de débit ; il convient surtout à un accès temporaire/test. Le script arrête aussi les anciens processus Cloudflare ou Serveo qui seraient encore actifs.
 
 ## Android / Termux : router multi-modèles
 
@@ -164,7 +164,7 @@ Le router officiel de `llama-server` dépend de `LLAMA_SUBPROCESS`. Ce support e
 Lueur utilise donc `scripts/model-router.py`, un petit router HTTP Python compatible Termux :
 
 ```text
-Cloudflare / Lueur :8080
+localhost.run / Lueur :8080
         ↓
 router Python
         ↓
