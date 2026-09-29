@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { HealthStatus, ModelEntry } from '../../types';
 import { modelLabel } from '../../lib/settings';
 import { ChevronIcon, MenuIcon, SquarePenIcon } from '../ui/Icons';
+import { BrandLogo } from '../ui/BrandLogo';
 
 const STATUS: Record<HealthStatus, [string, string]> = {
   online: ['var(--ok)', 'En ligne'],
@@ -61,6 +62,7 @@ export function ChatHeader({ isMobile, models, modelId, currentLabel, health, on
       {isMobile && (
         <button className="hdr-icon icon-btn ghost-plain" aria-label="Menu" onClick={onOpenDrawer}><MenuIcon /></button>
       )}
+      <div className="header-logo" aria-label="Lueur"><BrandLogo size={28} /></div>
       <div className="model-wrap" ref={wrap}>
         <button className="model-btn ghost-plain" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
           {currentLabel}<span className="chev"><ChevronIcon /></span>
