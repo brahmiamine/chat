@@ -4,10 +4,20 @@ const env = import.meta.env;
 
 const DEFAULT_MODEL_ID = env.VITE_LLM_MODEL || 'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M';
 const GEMMA_MODEL_ID = 'ggml-org/gemma-3-4b-it-GGUF:Q4_K_M';
+const PHI_MODEL_ID = 'bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M';
+const LLAMA_MODEL_ID = 'bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M';
+const SMOL_MODEL_ID = 'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M';
+const DEEPSEEK_MODEL_ID = 'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M';
+const CODER_MODEL_ID = 'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M';
 
 export const DEFAULT_MODELS: ModelEntry[] = [
   { id: DEFAULT_MODEL_ID, label: 'Qwen3.5 4B Vision' },
   { id: GEMMA_MODEL_ID, label: 'Gemma 3 4B Vision' },
+  { id: PHI_MODEL_ID, label: 'Phi-4 Mini 3.8B' },
+  { id: LLAMA_MODEL_ID, label: 'Llama 3.2 3B' },
+  { id: SMOL_MODEL_ID, label: 'SmolLM3 3B' },
+  { id: DEEPSEEK_MODEL_ID, label: 'DeepSeek R1 1.5B' },
+  { id: CODER_MODEL_ID, label: 'Qwen2.5 Coder 3B' },
 ];
 
 export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 1024, contextSize: 4096 };
