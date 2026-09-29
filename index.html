@@ -6,10 +6,28 @@
     <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#161514" media="(prefers-color-scheme: dark)" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Lueur" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <title>Lueur</title>
+    <style>
+      #app-splash {
+        position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center;
+        background: #fbfaf7; color: #1d1b18; transition: opacity .18s ease, visibility .18s ease;
+      }
+      #app-splash .splash-inner { display: grid; justify-items: center; gap: 14px; }
+      #app-splash img { width: 72px; height: 72px; filter: drop-shadow(0 10px 24px rgba(194,86,47,.22)); }
+      #app-splash span { font: 600 20px/1 system-ui, sans-serif; letter-spacing: -.02em; }
+      #app-splash.done { opacity: 0; visibility: hidden; }
+      @media (prefers-color-scheme: dark) {
+        #app-splash { background: #161514; color: #ebe7e0; }
+      }
+    </style>
     <script>
       // Apply the saved theme before first paint to avoid a light/dark flash.
       try {
@@ -23,6 +41,12 @@
     </script>
   </head>
   <body>
+    <div id="app-splash" role="status" aria-label="Chargement de Lueur">
+      <div class="splash-inner">
+        <img src="./logo.svg" alt="" />
+        <span>Lueur</span>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="./src/main.tsx"></script>
   </body>
