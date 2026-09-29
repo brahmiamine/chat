@@ -39,6 +39,10 @@ server_running() { pgrep -f "$LS_PAT" >/dev/null; }
 tunnel_running() { pgrep -f "$CF_PAT" >/dev/null; }
 tunnel_url() { grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | tail -1; }
 
+router_build_enabled() {
+  grep -q '^LLAMA_SUBPROCESS:BOOL=ON$' "$LLAMA_DIR/build/CMakeCache.txt" 2>/dev/null
+}
+
 stop_proc() {
   pkill -f "$1" 2>/dev/null || return 0
   for _ in $(seq 1 15); do
@@ -67,16 +71,36 @@ esac
 
 command -v termux-wake-lock >/dev/null && termux-wake-lock 2>/dev/null || true
 
+# Le router officiel de llama.cpp utilise des sous-processus.
+# llama.cpp désactive LLAMA_SUBPROCESS par défaut sur Android ; Termux doit donc
+# avoir été compilé explicitement avec -DLLAMA_SUBPROCESS=ON.
+if ! router_build_enabled; then
+  echo "❌ Ce build llama.cpp n'a pas le support subprocess requis par le router."
+  echo
+  echo "Sur Termux, exécute une fois :"
+  echo
+  echo "  cd $LLAMA_DIR"
+  echo "  git pull --ff-only"
+  echo "  cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=ON"
+  echo "  cmake --build build -j2 --target llama-server"
+  echo
+  echo "Puis relance :"
+  echo "  ~/start-ai.sh restart"
+  exit 2
+fi
+
 # --- Interface Lueur ---
 if [ -d "$UI_DIR/.git" ]; then
-  if git -C "$UI_DIR" fetch -q --depth 1 origin dist 2>/dev/null     && git -C "$UI_DIR" reset -q --hard FETCH_HEAD; then
+  if git -C "$UI_DIR" fetch -q --depth 1 origin dist 2>/dev/null \
+    && git -C "$UI_DIR" reset -q --hard FETCH_HEAD; then
     echo "🎨 Interface à jour"
   else
     echo "⚠️  Mise à jour de l'interface impossible (version locale conservée)"
   fi
 else
   echo "🎨 Téléchargement de l'interface..."
-  git clone -q -b dist --depth 1 https://github.com/brahmiamine/chat "$UI_DIR"     || echo "⚠️  Interface non téléchargée (l'API fonctionnera quand même)"
+  git clone -q -b dist --depth 1 https://github.com/brahmiamine/chat "$UI_DIR" \
+    || echo "⚠️  Interface non téléchargée (l'API fonctionnera quand même)"
 fi
 
 # --- Presets du router ---
@@ -129,7 +153,15 @@ else
 
   : > "$SERVER_LOG"
 
-  nohup ./build/bin/llama-server     --models-preset "$PRESET_FILE"     --models-max 1     --models-autoload     --host 127.0.0.1     --port "$PORT"     --path "$UI_DIR"     --cors-origins "https://brahmiamine.github.io"     > "$SERVER_LOG" 2>&1 &
+  nohup ./build/bin/llama-server \
+    --models-preset "$PRESET_FILE" \
+    --models-max 1 \
+    --models-autoload \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --path "$UI_DIR" \
+    --cors-origins "https://brahmiamine.github.io" \
+    > "$SERVER_LOG" 2>&1 &
 fi
 
 # --- Attendre que le router HTTP soit prêt ---
@@ -162,7 +194,10 @@ else
   echo "🌐 Ouverture du tunnel Cloudflare..."
   : > "$TUNNEL_LOG"
 
-  nohup cloudflared tunnel     --protocol http2     --url "http://127.0.0.1:$PORT"     > "$TUNNEL_LOG" 2>&1 &
+  nohup cloudflared tunnel \
+    --protocol http2 \
+    --url "http://127.0.0.1:$PORT" \
+    > "$TUNNEL_LOG" 2>&1 &
 
   for _ in $(seq 1 30); do
     [ -n "$(tunnel_url)" ] && break
