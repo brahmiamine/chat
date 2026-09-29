@@ -54,7 +54,7 @@ router_running() {
 }
 
 tunnel_running() {
-  pgrep -f "$CF_PAT" >/dev/null 2>&1
+  pgrep -f "$CF_NAMED_PAT" >/dev/null 2>&1
 }
 
 
