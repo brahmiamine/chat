@@ -9,7 +9,7 @@ export const CodeBlock = memo(function CodeBlock({ code, lang }: { code: string;
     <div className="code-block">
       <div className="code-head">
         <span className="lang">{languageLabel(lang)}</span>
-        <button className="code-copy ghost" onClick={() => copy(code)}>
+        <button className={`code-copy ghost${copied ? ' done' : ''}`} onClick={() => copy(code)}>
           {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
           {copied ? 'Copié' : 'Copier'}
         </button>

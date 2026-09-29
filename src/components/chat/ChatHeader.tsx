@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { HealthStatus, ModelEntry } from '../../types';
 import { modelLabel } from '../../lib/settings';
-import { ChevronIcon, MenuIcon, SquarePenIcon } from '../ui/Icons';
-import { BrandLogo } from '../ui/BrandLogo';
+import { CheckIcon, ChevronIcon, MenuIcon, SlidersIcon, SquarePenIcon } from '../ui/Icons';
+import { Tooltip } from '../ui/Tooltip';
 
 const STATUS: Record<HealthStatus, [string, string]> = {
   online: ['var(--ok)', 'En ligne'],
@@ -18,12 +18,14 @@ export function statusLabel(h: HealthStatus) {
 
 export function StatusIndicator({ health, showLabel, onClick }: { health: HealthStatus; showLabel: boolean; onClick: () => void }) {
   const [color, label] = STATUS[health];
-  return (
-    <button className="status-btn ghost" aria-label={label} onClick={onClick}>
-      <span className="status-dot" style={{ background: color, boxShadow: `0 0 0 3px color-mix(in oklch, ${color} 18%, transparent)` }} />
-      {showLabel && <span>{label}</span>}
+  const busy = health === 'checking' || health === 'loading';
+  const btn = (
+    <button className={`status-btn ghost s-${health}`} aria-label={`Statut : ${label}`} onClick={onClick} style={{ ['--dot' as string]: color }}>
+      <span className={`status-dot${busy ? ' pulse' : ''}`} />
+      {showLabel && <span className="status-label">{label}</span>}
     </button>
   );
+  return showLabel ? btn : <Tooltip label={label} placement="bottom-right">{btn}</Tooltip>;
 }
 
 interface Props {
@@ -60,24 +62,44 @@ export function ChatHeader({ isMobile, models, modelId, currentLabel, health, on
   return (
     <header className="header">
       {isMobile && (
-        <button className="hdr-icon icon-btn ghost-plain" aria-label="Menu" onClick={onOpenDrawer}><MenuIcon /></button>
+        <button className="hdr-icon icon-btn ghost-plain" aria-label="Ouvrir le menu" onClick={onOpenDrawer}><MenuIcon /></button>
       )}
-      <div className="header-logo" aria-label="Lueur"><BrandLogo size={28} /></div>
       <div className="model-wrap" ref={wrap}>
-        <button className="model-btn ghost-plain" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
-          {currentLabel}<span className="chev"><ChevronIcon /></span>
+        <button
+          className={`model-btn ghost-plain${open ? ' open' : ''}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          title={currentLabel}
+          onClick={() => setOpen(o => !o)}
+        >
+          <span className="model-name">{currentLabel}</span>
+          <span className="chev"><ChevronIcon /></span>
         </button>
         {open && (
           <div className="model-menu menu" role="menu">
-            <div className="label">Modèle</div>
-            {models.map(m => (
-              <button key={m.id} role="menuitemradio" aria-checked={m.id === modelId} className="model-opt" onClick={() => { onSelectModel(m.id); setOpen(false); }}>
-                <span className={`radio${m.id === modelId ? ' on' : ''}`} />
-                <span className="name">{modelLabel(m)}</span>
-              </button>
-            ))}
+            <div className="label">Choisir un modèle</div>
+            {models.map(m => {
+              const on = m.id === modelId;
+              return (
+                <button
+                  key={m.id}
+                  role="menuitemradio"
+                  aria-checked={on}
+                  className={`model-opt${on ? ' on' : ''}`}
+                  onClick={() => { onSelectModel(m.id); setOpen(false); }}
+                >
+                  <span className="txt">
+                    <span className="name">{modelLabel(m)}</span>
+                    <span className="id">{m.id}</span>
+                  </span>
+                  <span className="tick">{on && <CheckIcon />}</span>
+                </button>
+              );
+            })}
             <div className="sep" />
-            <button className="model-manage ghost" onClick={() => { setOpen(false); onManageModels(); }}>Gérer les modèles…</button>
+            <button className="model-manage ghost" onClick={() => { setOpen(false); onManageModels(); }}>
+              <SlidersIcon />Gérer les modèles…
+            </button>
           </div>
         )}
       </div>

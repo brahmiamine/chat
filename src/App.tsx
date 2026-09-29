@@ -11,6 +11,7 @@ import { ChatHeader } from './components/chat/ChatHeader';
 import { ChatView, type ChatViewHandle } from './components/chat/ChatView';
 import { SearchDialog } from './components/search/SearchDialog';
 import { SettingsModal } from './components/settings/SettingsModal';
+import { PreviewProvider } from './components/ui/Lightbox';
 
 const COLLAPSED_KEY = 'lueur.collapsed';
 
@@ -95,69 +96,72 @@ export default function App() {
   const generatingHere = chat.generating && chat.generatingCid === chat.activeId;
 
   return (
-    <div className="app" style={isMobile ? { height: vh } : undefined}>
-      <Sidebar
-        conversations={chat.conversations}
-        activeId={chat.activeId}
-        isMobile={isMobile}
-        collapsed={collapsed}
-        drawerOpen={drawer}
-        onCollapse={collapse}
-        onCloseDrawer={() => setDrawer(false)}
-        onNewChat={newChat}
-        onOpenSearch={openSearch}
-        onOpenSettings={openSettingsDefault}
-        onSelect={openConversation}
-        onRename={chat.rename}
-        onDelete={chat.remove}
-      />
-
-      <main className="main">
-        <ChatHeader
+    <PreviewProvider>
+      <div className="app" style={isMobile ? { height: vh } : undefined}>
+        <Sidebar
+          conversations={chat.conversations}
+          activeId={chat.activeId}
+          generatingId={chat.generatingCid}
           isMobile={isMobile}
-          models={settings.models}
-          modelId={settings.modelId}
-          currentLabel={model.label}
-          health={server.health}
-          onSelectModel={id => update({ modelId: id })}
-          onManageModels={() => openSettings('model')}
-          onOpenConnection={() => openSettings('connection')}
-          onOpenDrawer={() => setDrawer(true)}
+          collapsed={collapsed}
+          drawerOpen={drawer}
+          onCollapse={collapse}
+          onCloseDrawer={() => setDrawer(false)}
           onNewChat={newChat}
+          onOpenSearch={openSearch}
+          onOpenSettings={openSettingsDefault}
+          onSelect={openConversation}
+          onRename={chat.rename}
+          onDelete={chat.remove}
         />
-        <ChatView
-          ref={view}
-          conversation={chat.active}
-          live={chat.live}
-          generatingHere={generatingHere}
-          busy={chat.generating}
-          isMobile={isMobile}
-          onSend={chat.send}
-          onStop={chat.stop}
-          onRegenerate={chat.regenerate}
-          onUseDemo={retryWithDemo}
-          onOpenConnection={() => openSettings('connection')}
-        />
-      </main>
 
-      {searchOpen && <SearchDialog conversations={chat.conversations} onOpen={openConversation} onClose={() => setSearchOpen(false)} />}
+        <main className="main">
+          <ChatHeader
+            isMobile={isMobile}
+            models={settings.models}
+            modelId={settings.modelId}
+            currentLabel={model.label}
+            health={server.health}
+            onSelectModel={id => update({ modelId: id })}
+            onManageModels={() => openSettings('model')}
+            onOpenConnection={() => openSettings('connection')}
+            onOpenDrawer={() => setDrawer(true)}
+            onNewChat={newChat}
+          />
+          <ChatView
+            ref={view}
+            conversation={chat.active}
+            live={chat.live}
+            generatingHere={generatingHere}
+            busy={chat.generating}
+            isMobile={isMobile}
+            onSend={chat.send}
+            onStop={chat.stop}
+            onRegenerate={chat.regenerate}
+            onUseDemo={retryWithDemo}
+            onOpenConnection={() => openSettings('connection')}
+          />
+        </main>
 
-      {settingsTab && (
-        <SettingsModal
-          tab={settingsTab}
-          onTab={setSettingsTab}
-          onClose={() => setSettingsTab(null)}
-          settings={settings}
-          update={update}
-          health={server.health}
-          server={server.server}
-          test={server.test}
-          onTest={server.testConnection}
-          loadServerInfo={server.loadServerInfo}
-          conversationCount={chat.conversations.length}
-          onClearAll={chat.clearAll}
-        />
-      )}
-    </div>
+        {searchOpen && <SearchDialog conversations={chat.conversations} onOpen={openConversation} onClose={() => setSearchOpen(false)} />}
+
+        {settingsTab && (
+          <SettingsModal
+            tab={settingsTab}
+            onTab={setSettingsTab}
+            onClose={() => setSettingsTab(null)}
+            settings={settings}
+            update={update}
+            health={server.health}
+            server={server.server}
+            test={server.test}
+            onTest={server.testConnection}
+            loadServerInfo={server.loadServerInfo}
+            conversationCount={chat.conversations.length}
+            onClearAll={chat.clearAll}
+          />
+        )}
+      </div>
+    </PreviewProvider>
   );
 }

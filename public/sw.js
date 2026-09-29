@@ -1,4 +1,4 @@
-const CACHE = 'lueur-shell-v1';
+const CACHE = 'lueur-shell-v2';
 
 const SHELL = [
   './',
@@ -9,6 +9,10 @@ const SHELL = [
   './icon-192.svg',
   './icon-512.svg',
   './maskable-icon.svg',
+  './icon-192.png',
+  './icon-512.png',
+  './maskable-512.png',
+  './apple-touch-icon.png',
 ];
 
 self.addEventListener('install', event => {
