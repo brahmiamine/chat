@@ -68,7 +68,7 @@ function userWireContent(m: UserMessage): { content: ApiChatMessage['content']; 
       continue;
     }
 
-    if (f.text) text.push(`Fichier « ${f.name} » :\n```\n${f.text}\n````);
+    if (f.text) text.push(`Fichier « ${f.name} » :\n${f.text}`);
   }
 
   const joined = text.join('\n\n') || (media.length ? 'Analyse les éléments joints.' : '');
