@@ -2,7 +2,8 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Conversation } from '../../types';
 import { KBD } from '../../lib/chat';
 import { ConversationItem } from './ConversationItem';
-import { PanelIcon, PlusIcon, SearchIcon, SettingsIcon, XIcon } from '../ui/Icons';\nimport { BrandLogo } from '../ui/BrandLogo';
+import { PanelIcon, PlusIcon, SearchIcon, SettingsIcon, XIcon } from '../ui/Icons';
+import { BrandLogo } from '../ui/BrandLogo';
 import { Tooltip } from '../ui/Tooltip';
 
 interface Props {
