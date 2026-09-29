@@ -92,7 +92,8 @@ async function preparePdf(file: File): Promise<AttachedFile> {
 
   const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
-  const doc = await pdfjs.getDocument({ data }).promise;
+  const loadingTask = pdfjs.getDocument({ data });
+  const doc = await loadingTask.promise;
 
   try {
     const pagesToRead = Math.min(doc.numPages, MAX_PDF_TEXT_PAGES);
@@ -137,7 +138,7 @@ async function preparePdf(file: File): Promise<AttachedFile> {
       pageCount: doc.numPages,
     };
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 }
 
