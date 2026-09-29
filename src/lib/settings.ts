@@ -3,9 +3,11 @@ import type { GenerationSettings, ModelEntry, Settings } from '../types';
 const env = import.meta.env;
 
 const DEFAULT_MODEL_ID = env.VITE_LLM_MODEL || 'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M';
+const GEMMA_MODEL_ID = 'ggml-org/gemma-3-4b-it-GGUF:Q4_K_M';
 
 export const DEFAULT_MODELS: ModelEntry[] = [
   { id: DEFAULT_MODEL_ID, label: 'Qwen3.5 4B Vision' },
+  { id: GEMMA_MODEL_ID, label: 'Gemma 3 4B Vision' },
 ];
 
 export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 1024, contextSize: 4096 };
@@ -48,7 +50,11 @@ function migrateDefaultModel(s: Settings): Settings {
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
     .map(m => ({ ...m }));
 
-  if (!models.some(m => m.id === DEFAULT_MODEL_ID)) models.unshift(DEFAULT_MODELS[0]);
+  // Keep the two phone-friendly router models available in the selector,
+  // including for users who already have settings saved locally.
+  for (const builtin of [...DEFAULT_MODELS].reverse()) {
+    if (!models.some(m => m.id === builtin.id)) models.unshift(builtin);
+  }
 
   const contextSize = s.contextSize === 8192 ? 4096 : s.contextSize;
   const maxTokens = s.maxTokens === 2048 ? 1024 : s.maxTokens;
