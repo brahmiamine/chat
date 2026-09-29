@@ -49,7 +49,10 @@ function migrateDefaultModel(s: Settings): Settings {
     .map(m => ({ ...m }));
 
   if (!models.some(m => m.id === DEFAULT_MODEL_ID)) models.unshift(DEFAULT_MODELS[0]);
-  return { ...s, models, modelId: modelId || DEFAULT_MODEL_ID };
+
+  const contextSize = s.contextSize === 8192 ? 4096 : s.contextSize;
+  const maxTokens = s.maxTokens === 2048 ? 1024 : s.maxTokens;
+  return { ...s, models, modelId: modelId || DEFAULT_MODEL_ID, contextSize, maxTokens };
 }
 
 /** Former built-in defaults: a saved value equal to one of these follows the current default. */
