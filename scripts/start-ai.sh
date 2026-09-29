@@ -13,6 +13,8 @@
 PORT=8080
 MODEL_PORT=8081
 CTX=4096
+# Threads CPU pour llama-server (≈ nombre de cœurs performants du téléphone)
+THREADS="${LUEUR_THREADS:-4}"
 
 UI_DIR="$HOME/lueur-ui"
 LLAMA_DIR="$HOME/llama.cpp"
@@ -133,6 +135,8 @@ else
     LUEUR_ROUTER_PORT="$PORT" \
     LUEUR_MODEL_PORT="$MODEL_PORT" \
     LUEUR_CTX="$CTX" \
+    LUEUR_THREADS="$THREADS" \
+    LUEUR_THINKING="${LUEUR_THINKING:-0}" \
     LUEUR_UI_DIR="$UI_DIR" \
     LUEUR_LLAMA_DIR="$LLAMA_DIR" \
     LUEUR_MODEL_LOG="$MODEL_LOG" \
