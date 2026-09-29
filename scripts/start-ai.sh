@@ -47,7 +47,8 @@ command -v termux-wake-lock >/dev/null && termux-wake-lock
 
 # --- Interface web (branche dist du dépôt) ---
 if [ -d "$UI_DIR/.git" ]; then
-  if git -C "$UI_DIR" pull -q --ff-only 2>/dev/null; then echo "🎨 Interface à jour"
+  # La branche dist est reconstruite à chaque build : on se cale dessus (pas de pull)
+  if git -C "$UI_DIR" fetch -q --depth 1 origin dist 2>/dev/null && git -C "$UI_DIR" reset -q --hard FETCH_HEAD; then echo "🎨 Interface à jour"
   else echo "⚠️  Mise à jour de l'interface impossible (version locale conservée)"; fi
 else
   echo "🎨 Téléchargement de l'interface..."
