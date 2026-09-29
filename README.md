@@ -122,9 +122,9 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
-## Accès public : localhost.run
+## Accès public : Serveo
 
-Lueur utilise désormais **localhost.run** pour l'accès public gratuit. Aucun compte ni client spécifique n'est requis : le tunnel passe par SSH.
+Lueur utilise désormais **Serveo** pour l'accès public gratuit. Le tunnel passe par SSH et ne nécessite pas de client spécifique supplémentaire.
 
 Le script `start-ai.sh` lance automatiquement :
 
@@ -137,10 +137,12 @@ ssh \
   -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes \
   -R 80:127.0.0.1:8080 \
-  nokey@localhost.run
+  serveo.net
 ```
 
-localhost.run fournit automatiquement une URL HTTPS publique, typiquement sous `*.lhr.life` ou `*.localhost.run`. Le script récupère cette URL, l'enregistre dans `~/ai-url.txt` et l'affiche avec les endpoints API.
+Serveo fournit une URL HTTPS publique, généralement sous `*.serveousercontent.com`. Le script récupère cette URL, l'enregistre dans `~/ai-url.txt` et vérifie automatiquement `/health`.
+
+Si Serveo renvoie un hostname dont le certificat TLS n'est pas encore exploitable, le script ferme le tunnel et effectue automatiquement une seconde tentative pour obtenir une nouvelle URL.
 
 Pour démarrer :
 
@@ -155,7 +157,7 @@ Pour arrêter Lueur, le modèle et le tunnel :
 ~/start-ai.sh stop
 ```
 
-Le mode gratuit change périodiquement de domaine et impose une limite de débit ; il convient surtout à un accès temporaire/test. Le script arrête aussi les anciens processus Cloudflare ou Serveo qui seraient encore actifs.
+Le script arrête également d'anciens tunnels Cloudflare ou localhost.run qui seraient encore actifs.
 
 ## Android / Termux : router multi-modèles
 
@@ -164,7 +166,7 @@ Le router officiel de `llama-server` dépend de `LLAMA_SUBPROCESS`. Ce support e
 Lueur utilise donc `scripts/model-router.py`, un petit router HTTP Python compatible Termux :
 
 ```text
-localhost.run / Lueur :8080
+Serveo / Lueur :8080
         ↓
 router Python
         ↓
