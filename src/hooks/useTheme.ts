@@ -21,5 +21,10 @@ export function useTheme(theme: ThemeMode, fontSize: FontSize) {
     r.dataset.theme = dark ? 'dark' : 'light';
     r.style.colorScheme = dark ? 'dark' : 'light';
     r.style.setProperty('--fs', fontSize + 'px');
+    // Keep the browser / PWA status bar in sync with the chosen theme (not only the OS one).
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m => {
+      m.removeAttribute('media');
+      m.setAttribute('content', dark ? '#161514' : '#fbfaf7');
+    });
   }, [theme, sysDark, fontSize]);
 }

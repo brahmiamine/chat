@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Conversation } from '../../types';
 import { fmtDate, normalize } from '../../lib/chat';
-import { SearchIcon } from '../ui/Icons';
+import { MessageIcon, SearchIcon, XIcon } from '../ui/Icons';
 
 interface Props {
   conversations: Conversation[];
@@ -38,7 +38,10 @@ export function SearchDialog({ conversations, onOpen, onClose }: Props) {
   const results = useMemo(() => search(conversations, q), [conversations, q]);
   const idx = Math.min(sel, Math.max(0, results.length - 1));
 
+  const list = useRef<HTMLDivElement>(null);
+
   useEffect(() => { input.current?.focus(); }, []);
+  useEffect(() => { list.current?.querySelector('.sel')?.scrollIntoView({ block: 'nearest' }); }, [idx]);
 
   return (
     <div className="overlay search-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
@@ -57,17 +60,29 @@ export function SearchDialog({ conversations, onOpen, onClose }: Props) {
               else if (e.key === 'Enter' && results[idx]) { e.preventDefault(); onOpen(results[idx].c.id); }
             }}
           />
-          <span className="kbd-tag">Échap</span>
+          {q ? (
+            <button className="search-clear icon-btn ghost" aria-label="Effacer" onClick={() => { setQ(''); input.current?.focus(); }}><XIcon size={15} /></button>
+          ) : (
+            <span className="kbd-tag hide-sm">Échap</span>
+          )}
+          <button className="search-close ghost show-sm" onClick={onClose}>Annuler</button>
         </div>
-        <div className="search-list">
+        {!q && results.length > 0 && <div className="search-sec">Récentes</div>}
+        <div className="search-list" ref={list}>
           {results.map((r, i) => (
-            <button key={r.c.id} className={`search-item${i === idx ? ' sel' : ''}`} onClick={() => onOpen(r.c.id)} onMouseEnter={() => i !== idx && setSel(i)}>
-              <div className="row"><span className="t">{r.c.title}</span><span className="d">{fmtDate(r.c.updatedAt)}</span></div>
-              {r.snippet && <span className="s">{r.snippet}</span>}
+            <button key={r.c.id} className={`search-item${i === idx ? ' sel' : ''}`} style={{ animationDelay: `${Math.min(i, 8) * 18}ms` }} onClick={() => onOpen(r.c.id)} onMouseEnter={() => i !== idx && setSel(i)}>
+              <span className="si-ico"><MessageIcon /></span>
+              <span className="si-txt">
+                <span className="row"><span className="t">{r.c.title}</span><span className="d">{fmtDate(r.c.updatedAt)}</span></span>
+                {r.snippet && <span className="s">{r.snippet}</span>}
+              </span>
             </button>
           ))}
           {results.length === 0 && (
-            <div className="search-empty">{conversations.length ? 'Aucun résultat' : 'Aucune conversation pour l’instant'}</div>
+            <div className="search-empty">
+              <SearchIcon size={22} />
+              <span>{conversations.length ? `Aucun résultat pour « ${q.trim()} »` : 'Aucune conversation pour l’instant'}</span>
+            </div>
           )}
         </div>
       </div>

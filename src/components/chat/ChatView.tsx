@@ -1,10 +1,11 @@
-import { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState, type DragEvent } from 'react';
 import type { AttachedFile, Conversation } from '../../types';
 import type { LiveStream } from '../../hooks/useChat';
 import { useAutoScroll } from '../../hooks/useAutoScroll';
 import { AssistantMessage, UserMessage } from './Messages';
 import { Composer, type ComposerHandle } from './Composer';
 import { Hero, Suggestions } from './EmptyState';
+import { UploadIcon } from '../ui/Icons';
 
 interface Props {
   conversation: Conversation | null;
@@ -19,7 +20,9 @@ interface Props {
   onOpenConnection: () => void;
 }
 
-export type ChatViewHandle = ComposerHandle;
+export type ChatViewHandle = Omit<ComposerHandle, 'addFiles'>;
+
+const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types || [])].includes('Files');
 
 export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
   { conversation, live, generatingHere, busy, isMobile, onSend, onStop, onRegenerate, onUseDemo, onOpenConnection }, ref,
@@ -46,11 +49,44 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
     return onSend(text, files);
   }, [onSend, pin]);
 
+  // ---- drag & drop anywhere in the chat area ----
+  const [dragging, setDragging] = useState(false);
+  const depth = useRef(0);
+  const onDragEnter = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth.current++;
+    setDragging(true);
+  };
+  const onDragLeave = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    depth.current = Math.max(0, depth.current - 1);
+    if (!depth.current) setDragging(false);
+  };
+  const onDragOver = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const onDrop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth.current = 0;
+    setDragging(false);
+    composer.current?.addFiles([...e.dataTransfer.files]);
+  };
+
   let lastAssistant = -1;
   messages.forEach((m, i) => { if (m.role === 'assistant') lastAssistant = i; });
 
   return (
-    <div className={`chat-body${hasMessages ? '' : ' empty'}`}>
+    <div
+      className={`chat-body${hasMessages ? '' : ' empty'}`}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       {hasMessages && (
         <div
           className="scroller"
@@ -59,7 +95,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
           onWheel={scroll.onUserScrollIntent}
           onTouchMove={scroll.onUserScrollIntent}
         >
-          <div className="thread">
+          <div className="thread" key={conversation!.id}>
             {messages.map((m, i) =>
               m.role === 'user' ? (
                 <UserMessage key={m.id} message={m} />
@@ -69,6 +105,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
                   message={m}
                   liveContent={liveHere?.mid === m.id ? liveHere.content : undefined}
                   fallbackAuthor={conversation!.modelLabel}
+                  isLast={i === lastAssistant}
                   canRegenerate={i === lastAssistant && !busy}
                   onRegenerate={regen}
                   onUseDemo={demoRetry}
@@ -95,6 +132,16 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
       />
 
       {!hasMessages && <Suggestions onPick={t => composer.current?.prefill(t)} />}
+
+      {dragging && (
+        <div className="drop-zone" aria-hidden="true">
+          <div className="drop-card">
+            <UploadIcon />
+            <div className="t">Déposez vos fichiers ici</div>
+            <div className="s">Images, PDF, texte ou code · 5 max</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

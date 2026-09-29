@@ -1,17 +1,19 @@
-import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import type { AttachedFile } from '../../types';
 import { uid } from '../../lib/chat';
 import { ATTACHMENT_ACCEPT, prepareAttachment } from '../../lib/attachments';
-import { ArrowDownIcon, ArrowUpIcon, FileIcon, PlusIcon, StopIcon, XIcon } from '../ui/Icons';
+import { AlertIcon, ArrowDownIcon, ArrowUpIcon, PaperclipIcon, StopIcon, XIcon } from '../ui/Icons';
 import { Tooltip } from '../ui/Tooltip';
+import { AttachmentList } from './Attachments';
 
-const MAX_H = 156; // ≈ 6 lines
+const MAX_H = 200; // ≈ 8 lines
 const MAX_FILES = 5;
 
 export interface ComposerHandle {
   focus: () => void;
   prefill: (text: string) => void;
   clear: () => void;
+  addFiles: (files: File[]) => void;
 }
 
 interface Props {
@@ -35,12 +37,14 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
 ) {
   const [text, setText] = useState('');
   const [files, setFiles] = useState<Draft[]>([]);
-  const [processingFiles, setProcessingFiles] = useState(false);
+  const [pending, setPending] = useState(0);
   const [fileError, setFileError] = useState('');
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const count = useRef(0);
+  count.current = files.length + pending;
 
-  // Auto-resize: 1 line → ~6 lines, then scroll.
+  // Auto-resize: 1 line → ~8 lines, then scroll.
   useLayoutEffect(() => {
     const el = ta.current;
     if (!el) return;
@@ -48,6 +52,29 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     el.style.height = Math.min(el.scrollHeight, MAX_H) + 'px';
     el.style.overflowY = el.scrollHeight > MAX_H ? 'auto' : 'hidden';
   }, [text]);
+
+  const addFiles = useCallback(async (list: File[]) => {
+    if (!list.length) return;
+    const remaining = Math.max(0, MAX_FILES - count.current);
+    const take = list.slice(0, remaining);
+    setFileError(list.length > remaining ? `Maximum ${MAX_FILES} pièces jointes par message.` : '');
+    if (!take.length) return;
+
+    setPending(p => p + take.length);
+    // Prepared in parallel, added in the order they were picked.
+    const prepared = await Promise.all(take.map(async f => {
+      try {
+        return { id: uid(), ...(await prepareAttachment(f)) } as Draft;
+      } catch (err) {
+        setFileError(err instanceof Error ? err.message : `Impossible de lire ${f.name}`);
+        return null;
+      }
+    }));
+    setPending(p => p - take.length);
+    const ok = prepared.filter((d): d is Draft => !!d);
+    if (ok.length) setFiles(x => [...x, ...ok].slice(0, MAX_FILES));
+    if (window.matchMedia?.('(hover: hover)').matches) ta.current?.focus();
+  }, []);
 
   useImperativeHandle(ref, () => ({
     focus: () => ta.current?.focus(),
@@ -59,9 +86,11 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
       });
     },
     clear: () => { setText(''); setFiles([]); setFileError(''); },
-  }), []);
+    addFiles: (list: File[]) => { addFiles(list); },
+  }), [addFiles]);
 
-  const canSend = (!!text.trim() || files.length > 0) && !busy && !processingFiles;
+  const processing = pending > 0;
+  const canSend = (!!text.trim() || files.length > 0) && !busy && !processing;
 
   const submit = useCallback(() => {
     if (!canSend) return;
@@ -80,49 +109,34 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     }
   };
 
-  const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
-    const list = [...(e.target.files || [])];
-    e.target.value = '';
-    if (!list.length) return;
-
-    setFileError('');
-    setProcessingFiles(true);
-    const out: Draft[] = [];
-    const remaining = Math.max(0, MAX_FILES - files.length);
-
-    try {
-      for (const f of list.slice(0, remaining)) {
-        try {
-          out.push({ id: uid(), ...(await prepareAttachment(f)) });
-        } catch (err) {
-          setFileError(err instanceof Error ? err.message : `Impossible de lire ${f.name}`);
-        }
-      }
-      if (list.length > remaining) setFileError(`Maximum ${MAX_FILES} pièces jointes par message.`);
-      if (out.length) setFiles(x => [...x, ...out].slice(0, MAX_FILES));
-    } finally {
-      setProcessingFiles(false);
-      ta.current?.focus();
-    }
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = [...(e.clipboardData?.files || [])];
+    if (!pasted.length) return;
+    e.preventDefault();
+    addFiles(pasted);
   };
+
+  const full = count.current >= MAX_FILES;
 
   return (
     <div className={`composer-wrap${docked ? ' docked' : ''}`}>
-      {showScrollButton && (
-        <button className="to-bottom" aria-label="Aller en bas" onClick={onScrollToBottom}><ArrowDownIcon /></button>
-      )}
-      <div className="composer">
-        {files.length > 0 && (
-          <div className="attached">
-            {files.map(f => (
-              <div key={f.id} className="file-chip">
-                <FileIcon /><span>{f.name}</span>
-                <button className="chip-x icon-btn ghost" aria-label="Retirer le fichier" onClick={() => setFiles(x => x.filter(y => y.id !== f.id))}>
-                  <XIcon size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
+      <button
+        className={`to-bottom${showScrollButton ? ' show' : ''}`}
+        aria-label="Aller en bas"
+        tabIndex={showScrollButton ? 0 : -1}
+        aria-hidden={!showScrollButton}
+        onClick={onScrollToBottom}
+      >
+        <ArrowDownIcon size={17} />
+      </button>
+      <div className={`composer${generating ? ' is-generating' : ''}`}>
+        {(files.length > 0 || processing) && (
+          <AttachmentList
+            variant="composer"
+            files={files}
+            pending={pending}
+            onRemove={i => setFiles(x => x.filter((_, j) => j !== i))}
+          />
         )}
         <textarea
           ref={ta}
@@ -130,36 +144,51 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Posez votre question…"
+          onPaste={onPaste}
+          placeholder={files.length ? 'Ajoutez une question sur ces fichiers…' : 'Posez votre question…'}
           aria-label="Message"
           enterKeyHint="send"
         />
+        {!!fileError && (
+          <div className="attach-error" role="alert">
+            <AlertIcon size={14} /><span>{fileError}</span>
+            <button className="icon-btn ghost" aria-label="Masquer" onClick={() => setFileError('')}><XIcon size={13} /></button>
+          </div>
+        )}
         <div className="bar">
           <div className="attach">
-            <Tooltip label="Joindre une image, un PDF ou un fichier" placement="top-left">
+            <Tooltip label={full ? `Maximum ${MAX_FILES} fichiers` : 'Joindre une image, un PDF ou un fichier'} placement="top-left">
               <button
-                className="round-btn ghost"
+                className="round-btn ghost attach-btn"
                 aria-label="Joindre une image, un PDF ou un fichier"
-                disabled={processingFiles || files.length >= MAX_FILES}
+                disabled={full}
                 onClick={() => fileInput.current?.click()}
               >
-                <PlusIcon />
+                <PaperclipIcon size={19} />
               </button>
             </Tooltip>
-            <input ref={fileInput} type="file" multiple accept={ATTACHMENT_ACCEPT} onChange={onFile} style={{ display: 'none' }} />
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept={ATTACHMENT_ACCEPT}
+              onChange={e => { const l = [...(e.target.files || [])]; e.target.value = ''; addFiles(l); }}
+              hidden
+            />
+            {processing && <span className="attach-status">Préparation…</span>}
           </div>
-          {generating ? (
-            <button className="round-btn stop-btn" aria-label="Arrêter la génération" onClick={onStop}><StopIcon /></button>
-          ) : (
-            <button className={`round-btn send-btn${canSend ? ' ready' : ''}`} aria-label="Envoyer" disabled={!canSend} onClick={submit}>
-              <ArrowUpIcon />
-            </button>
-          )}
+          <div className="send-slot">
+            {generating ? (
+              <button key="stop" className="round-btn stop-btn" aria-label="Arrêter la génération" onClick={onStop}><StopIcon size={16} /></button>
+            ) : (
+              <button key="send" className={`round-btn send-btn${canSend ? ' ready' : ''}`} aria-label="Envoyer" disabled={!canSend} onClick={submit}>
+                <ArrowUpIcon size={19} />
+              </button>
+            )}
+          </div>
         </div>
-        {processingFiles && <div className="attach-status">Préparation des pièces jointes…</div>}
-        {!!fileError && <div className="attach-error" role="alert">{fileError}</div>}
       </div>
-      {showHint && <div className="composer-hint">Entrée pour envoyer · Maj + Entrée pour aller à la ligne</div>}
+      {showHint && <div className="composer-hint">Entrée pour envoyer · Maj + Entrée pour aller à la ligne · Glissez ou collez des images</div>}
     </div>
   );
 });

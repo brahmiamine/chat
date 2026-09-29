@@ -5,6 +5,7 @@ import { MoreIcon, PencilIcon, TrashIcon } from '../ui/Icons';
 interface Props {
   conversation: Conversation;
   active: boolean;
+  generating: boolean;
   menuOpen: boolean;
   onOpen: (id: string) => void;
   onToggleMenu: (id: string | null) => void;
@@ -12,7 +13,7 @@ interface Props {
   onDelete: (id: string) => void;
 }
 
-export const ConversationItem = memo(function ConversationItem({ conversation: c, active, menuOpen, onOpen, onToggleMenu, onRename, onDelete }: Props) {
+export const ConversationItem = memo(function ConversationItem({ conversation: c, active, generating, menuOpen, onOpen, onToggleMenu, onRename, onDelete }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [value, setValue] = useState(c.title);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -46,7 +47,10 @@ export const ConversationItem = memo(function ConversationItem({ conversation: c
         />
       ) : (
         <>
-          <button className={`conv-btn${active ? ' active' : ''}`} onClick={() => onOpen(c.id)} title={c.title}>{c.title}</button>
+          <button className={`conv-btn${active ? ' active' : ''}`} onClick={() => onOpen(c.id)} title={c.title} aria-current={active ? 'page' : undefined}>
+            <span className="conv-title">{c.title}</span>
+            {generating && <span className="conv-live" aria-label="Réponse en cours" />}
+          </button>
           <button
             className="conv-dots icon-btn ghost"
             aria-label="Options"

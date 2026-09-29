@@ -2,13 +2,15 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Conversation } from '../../types';
 import { KBD } from '../../lib/chat';
 import { ConversationItem } from './ConversationItem';
-import { PanelIcon, PlusIcon, SearchIcon, SettingsIcon, XIcon } from '../ui/Icons';
+import { MessageIcon, PanelIcon, SquarePenIcon, SearchIcon, SettingsIcon, XIcon } from '../ui/Icons';
 import { BrandLogo } from '../ui/BrandLogo';
 import { Tooltip } from '../ui/Tooltip';
 
 interface Props {
   conversations: Conversation[];
   activeId: string | null;
+  /** Conversation currently streaming an answer. */
+  generatingId: string | null;
   isMobile: boolean;
   collapsed: boolean;
   drawerOpen: boolean;
@@ -46,7 +48,7 @@ function MiniButton({ label, onClick, children }: { label: string; onClick: () =
 }
 
 export const Sidebar = memo(function Sidebar(props: Props) {
-  const { conversations, activeId, isMobile, collapsed, drawerOpen, onCollapse, onCloseDrawer, onNewChat, onOpenSearch, onOpenSettings, onSelect, onRename, onDelete } = props;
+  const { conversations, activeId, generatingId, isMobile, collapsed, drawerOpen, onCollapse, onCloseDrawer, onNewChat, onOpenSearch, onOpenSettings, onSelect, onRename, onDelete } = props;
   const [menuId, setMenuId] = useState<string | null>(null);
   const groups = useMemo(() => groupByDate(conversations), [conversations]);
   const mini = !isMobile && collapsed;
@@ -75,7 +77,7 @@ export const Sidebar = memo(function Sidebar(props: Props) {
           <div className="sb-mini">
             <div className="sb-mini-logo"><BrandLogo size={28} /></div>
             <MiniButton label="Ouvrir la barre latérale" onClick={() => onCollapse(false)}><PanelIcon /></MiniButton>
-            <MiniButton label="Nouvelle conversation" onClick={onNewChat}><PlusIcon /></MiniButton>
+            <MiniButton label="Nouvelle conversation" onClick={onNewChat}><SquarePenIcon size={18} /></MiniButton>
             <MiniButton label="Rechercher" onClick={onOpenSearch}><SearchIcon /></MiniButton>
             <div className="spacer" />
             <MiniButton label="Paramètres" onClick={onOpenSettings}><SettingsIcon /></MiniButton>
@@ -94,10 +96,10 @@ export const Sidebar = memo(function Sidebar(props: Props) {
             </div>
             <div className="sb-actions">
               <button className="sb-action primary" onClick={onNewChat}>
-                <PlusIcon /><span className="grow">Nouvelle conversation</span><span className="kbd">{KBD.n}</span>
+                <span className="sb-ico"><SquarePenIcon size={16} /></span><span className="grow">Nouvelle conversation</span><span className="kbd">{KBD.n}</span>
               </button>
               <button className="sb-action secondary" onClick={onOpenSearch}>
-                <SearchIcon /><span className="grow">Rechercher</span><span className="kbd">{KBD.k}</span>
+                <span className="sb-ico"><SearchIcon size={16} /></span><span className="grow">Rechercher</span><span className="kbd">{KBD.k}</span>
               </button>
             </div>
             <nav className="sb-list">
@@ -109,6 +111,7 @@ export const Sidebar = memo(function Sidebar(props: Props) {
                       key={c.id}
                       conversation={c}
                       active={c.id === activeId}
+                      generating={c.id === generatingId}
                       menuOpen={menuId === c.id}
                       onOpen={onSelect}
                       onToggleMenu={setMenuId}
@@ -118,7 +121,12 @@ export const Sidebar = memo(function Sidebar(props: Props) {
                   ))}
                 </div>
               ))}
-              {conversations.length === 0 && <div className="sb-empty">Vos conversations apparaîtront ici.</div>}
+              {conversations.length === 0 && (
+                <div className="sb-empty">
+                  <MessageIcon size={18} />
+                  <span>Vos conversations apparaîtront ici.</span>
+                </div>
+              )}
             </nav>
             <div className="sb-bottom">
               <button className="sb-action" onClick={onOpenSettings}><SettingsIcon />Paramètres</button>
@@ -126,7 +134,7 @@ export const Sidebar = memo(function Sidebar(props: Props) {
           </div>
         )}
       </aside>
-      {isMobile && drawerOpen && <div className="scrim" onClick={onCloseDrawer} />}
+      {isMobile && <div className={`scrim${drawerOpen ? ' show' : ''}`} onClick={onCloseDrawer} aria-hidden="true" />}
     </>
   );
 });

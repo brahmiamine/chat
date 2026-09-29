@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-type Placement = 'top' | 'top-left' | 'right';
+type Placement = 'top' | 'top-left' | 'right' | 'bottom-right';
 
 /** CSS-only hover tooltip (hidden on touch devices). */
 export function Tooltip({ label, placement = 'top', children }: { label: string; placement?: Placement; children: ReactNode }) {

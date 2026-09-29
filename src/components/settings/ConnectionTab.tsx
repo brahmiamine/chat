@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { ProviderKind } from '../../types';
 import { currentModel } from '../../lib/settings';
 import { statusLabel } from '../chat/ChatHeader';
-import { CheckIcon } from '../ui/Icons';
+import { AlertIcon, CheckIcon, EyeIcon, EyeOffIcon, PlugIcon } from '../ui/Icons';
 import { Segmented } from '../ui/Segmented';
 import type { SettingsModalProps } from './SettingsModal';
 
@@ -62,18 +62,24 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
                 spellCheck={false}
                 autoComplete="off"
               />
-              <button className="key-toggle ghost" onClick={() => setShowKey(v => !v)}>{showKey ? 'Masquer' : 'Afficher'}</button>
+              <button className="key-toggle icon-btn ghost" aria-label={showKey ? 'Masquer la clé' : 'Afficher la clé'} onClick={() => setShowKey(v => !v)}>
+                {showKey ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
             </div>
           </div>
           <div>
             <button className="btn-solid" onClick={onTest} disabled={test.state === 'testing'}>
+              {test.state === 'testing' ? <span className="spinner sm" /> : <PlugIcon />}
               {test.state === 'testing' ? 'Test en cours…' : 'Tester la connexion'}
             </button>
             {test.state === 'ok' && <div className="test-ok"><CheckIcon />Connecté</div>}
             {test.state === 'fail' && (
               <div className="test-fail" role="alert">
-                <div className="t">Échec de la connexion</div>
-                <div className="m">{test.message}</div>
+                <AlertIcon size={16} />
+                <div>
+                  <div className="t">Échec de la connexion</div>
+                  <div className="m">{test.message}</div>
+                </div>
               </div>
             )}
           </div>

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import type { HealthStatus, ServerInfo, Settings, SettingsTab } from '../../types';
 import type { TestResult } from '../../hooks/useServerHealth';
 import { ContrastIcon, CpuIcon, GearIcon, PlugIcon, SlidersIcon, XIcon } from '../ui/Icons';
@@ -34,10 +34,15 @@ export interface SettingsModalProps {
 export function SettingsModal(props: SettingsModalProps) {
   const { tab, onTab, onClose } = props;
   const title = (TABS.find(t => t[0] === tab) || TABS[2])[1];
+  const nav = useRef<HTMLElement>(null);
+  // Mobile: the tab strip scrolls horizontally, keep the active tab visible.
+  useEffect(() => {
+    nav.current?.querySelector('.settings-tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [tab]);
   return (
     <div className="overlay settings-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="settings" role="dialog" aria-modal="true" aria-label="Paramètres">
-        <nav className="settings-nav" role="tablist">
+        <nav className="settings-nav" role="tablist" ref={nav}>
           <div className="title">Paramètres</div>
           {TABS.map(([id, label, icon]) => (
             <button key={id} role="tab" aria-selected={tab === id} className={`settings-tab${tab === id ? ' on' : ''}`} onClick={() => onTab(id)}>
@@ -50,7 +55,7 @@ export function SettingsModal(props: SettingsModalProps) {
             <h2>{title}</h2>
             <button className="settings-close icon-btn ghost" aria-label="Fermer" onClick={onClose}><XIcon /></button>
           </div>
-          <div className="settings-body" role="tabpanel">
+          <div className="settings-body" role="tabpanel" key={tab}>
             {tab === 'general' && <GeneralTab {...props} />}
             {tab === 'model' && <ModelTab {...props} />}
             {tab === 'connection' && <ConnectionTab {...props} />}

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { prettyModel } from '../../lib/settings';
-import { RefreshIcon, XIcon } from '../ui/Icons';
+import { PlusIcon, RefreshIcon, TrashIcon } from '../ui/Icons';
 import type { SettingsModalProps } from './SettingsModal';
 
 export function ModelTab({ settings: s, update, loadServerInfo }: SettingsModalProps) {
@@ -51,13 +51,13 @@ export function ModelTab({ settings: s, update, loadServerInfo }: SettingsModalP
                 {s.models.length > 1 && (
                   <button
                     className="rm icon-btn ghost"
-                    aria-label="Retirer"
+                    aria-label={`Retirer ${m.label || m.id}`}
                     onClick={() => {
                       const rest = s.models.filter(x => x.id !== m.id);
                       update({ models: rest, modelId: s.modelId === m.id ? rest[0].id : s.modelId });
                     }}
                   >
-                    <XIcon size={14} />
+                    <TrashIcon size={15} />
                   </button>
                 )}
               </div>
@@ -67,7 +67,7 @@ export function ModelTab({ settings: s, update, loadServerInfo }: SettingsModalP
       </div>
       <div>
         <div className="s-label">Ajouter un modèle</div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="add-row">
           <input
             className="field mono"
             style={{ flex: 1, minWidth: 0 }}
@@ -77,10 +77,10 @@ export function ModelTab({ settings: s, update, loadServerInfo }: SettingsModalP
             placeholder="Identifiant, ex. lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
             spellCheck={false}
           />
-          <button className="btn-outline" onClick={addModel}>Ajouter</button>
+          <button className="btn-outline" onClick={addModel} disabled={!newId.trim()}><PlusIcon size={16} />Ajouter</button>
         </div>
         <button className="import-btn ghost" onClick={importModels} disabled={importing === 'loading'}>
-          <RefreshIcon />{importLabel}
+          {importing === 'loading' ? <span className="spinner sm" /> : <RefreshIcon />}{importLabel}
         </button>
       </div>
     </div>
