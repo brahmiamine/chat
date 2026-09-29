@@ -4,11 +4,13 @@ import { isReachableIgnoringCors, LLMApiError, StreamInterruptedError } from './
 
 export type AbortReason = 'user' | 'timeout' | null;
 
-export function corsError(): ChatError {
+export function corsError(baseUrl: string): ChatError {
   const origin = typeof location !== 'undefined' ? location.origin : '';
+  let host = baseUrl;
+  try { host = new URL(baseUrl).host; } catch { /* keep raw */ }
   return {
-    title: 'Le serveur refuse les requêtes venant de ce site (CORS).',
-    hint: `Le serveur est joignable, mais n’autorise pas ${origin}. Relancez llama-server avec --cors-origins ${origin} (ou --cors-origins "*").`,
+    title: 'Le serveur répond, mais sa réponse est bloquée par le navigateur.',
+    hint: `Vérifiez d’abord l’URL (${host}) : un tunnel arrêté renvoie une page d’erreur Cloudflare. Sinon, llama-server n’autorise pas ${origin} : relancez-le avec --cors-origins ${origin}.`,
   };
 }
 
@@ -18,7 +20,7 @@ export function corsError(): ChatError {
  */
 export async function diagnoseError(e: unknown, baseUrl: string, reason: AbortReason = null): Promise<ChatError> {
   const isNetworkFailure = e instanceof TypeError && !reason && !isMixedContent(baseUrl) && navigator.onLine;
-  if (isNetworkFailure && (await isReachableIgnoringCors({ baseUrl }))) return corsError();
+  if (isNetworkFailure && (await isReachableIgnoringCors({ baseUrl }))) return corsError(baseUrl);
   return friendlyError(e, baseUrl, reason);
 }
 

@@ -23,6 +23,9 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const KEY = 'lueur.settings';
 
+/** Former built-in defaults: a saved value equal to one of these follows the current default. */
+const PREVIOUS_DEFAULT_URLS = ['http://192.168.1.98:8080', 'https://searched-track-dsc-perhaps.trycloudflare.com'];
+
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
@@ -30,6 +33,7 @@ export function loadSettings(): Settings {
       const s: Settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
       if (s.provider !== 'demo') s.provider = 'openai-compatible'; // also migrates the prototype's "llamacpp"
       if (!Array.isArray(s.models) || !s.models.length) s.models = DEFAULT_MODELS;
+      if (PREVIOUS_DEFAULT_URLS.includes(String(s.baseUrl).trim().replace(/\/+$/, ''))) s.baseUrl = DEFAULT_SETTINGS.baseUrl;
       return s;
     }
   } catch { /* corrupted or unavailable storage */ }
