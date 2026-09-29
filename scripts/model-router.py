@@ -33,6 +33,12 @@ PORT = int(os.environ.get("LUEUR_ROUTER_PORT", "8080"))
 MODEL_HOST = "127.0.0.1"
 MODEL_PORT = int(os.environ.get("LUEUR_MODEL_PORT", "8081"))
 CTX = int(os.environ.get("LUEUR_CTX", "4096"))
+# Sur téléphone, utiliser tous les cœurs (y compris les "little") ralentit la
+# génération : on se limite par défaut aux cœurs performants.
+THREADS = int(os.environ.get("LUEUR_THREADS", "4"))
+# Les modèles "thinking" génèrent un long raisonnement caché avant la réponse.
+# Désactivé par défaut pour qu'ils répondent tout de suite (LUEUR_THINKING=1 pour le garder).
+THINKING = os.environ.get("LUEUR_THINKING", "0") == "1"
 UI_DIR = Path(os.environ.get("LUEUR_UI_DIR", str(Path.home() / "lueur-ui"))).resolve()
 LLAMA_DIR = Path(os.environ.get("LUEUR_LLAMA_DIR", str(Path.home() / "llama.cpp"))).resolve()
 LLAMA_BIN = LLAMA_DIR / "build" / "bin" / "llama-server"
@@ -40,11 +46,11 @@ MODEL_LOG = Path(os.environ.get("LUEUR_MODEL_LOG", str(Path.home() / "llama-mode
 DEFAULT_MODEL = "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
 
 MODELS: dict[str, dict[str, object]] = {
-    DEFAULT_MODEL: {"label": "Qwen3.5 4B Vision", "vision": True},
+    DEFAULT_MODEL: {"label": "Qwen3.5 4B Vision", "vision": True, "thinking": True},
     "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M": {"label": "Gemma 3 4B Vision", "vision": True},
     "bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M": {"label": "Phi-4 Mini 3.8B", "vision": False},
     "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M": {"label": "Llama 3.2 3B", "vision": False},
-    "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M": {"label": "SmolLM3 3B", "vision": False},
+    "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M": {"label": "SmolLM3 3B", "vision": False, "thinking": True},
     "bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M": {"label": "DeepSeek R1 1.5B", "vision": False},
     "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M": {"label": "Qwen2.5 Coder 3B", "vision": False},
 }
@@ -125,6 +131,8 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
             "-c", str(CTX),
             "-np", "1",
         ]
+        if THREADS > 0:
+            args += ["-t", str(THREADS)]
         if bool(meta.get("vision")):
             args.append("--mmproj-auto")
 
@@ -290,6 +298,9 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": f"Modèle inconnu: {model_id}"}})
             return
 
+        if not THINKING and MODELS[model_id].get("thinking") and "chat_template_kwargs" not in body:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+
         if stream:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -348,7 +359,9 @@ class RouterHandler(BaseHTTPRequestHandler):
                 return
 
             while True:
-                chunk = res.read(4096)
+                # read1 renvoie dès qu'un morceau arrive ; read(4096) attendrait
+                # d'avoir 4 Ko, soit des dizaines de tokens bufferisés.
+                chunk = res.read1(4096)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
