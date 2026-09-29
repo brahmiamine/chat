@@ -74,7 +74,7 @@ Ouvrez ensuite directement l’URL `https://…trycloudflare.com` affichée par 
 - Mise en page responsive : tiroir sur mobile, prise en compte du clavier iOS/Android, zones tactiles d’au moins 44 px
 - Entrée pour envoyer, Maj + Entrée pour aller à la ligne, ⌘/Ctrl N (ou ⇧⌘O) pour une nouvelle conversation
 - Pièces jointes **image, PDF et texte/code** : images envoyées au modèle vision ; texte des PDF extrait localement avec PDF.js ; PDF scannés convertis en images (jusqu’aux 3 premières pages)
-- Router llama.cpp avec deux modèles adaptés au téléphone : **Qwen3.5 4B Vision Q4_K_M** et **Gemma 3 4B Vision Q4_K_M** ; `--models-max 1` limite la RAM à un modèle chargé à la fois
+- Router llama.cpp avec **7 modèles** sélectionnables : Qwen3.5 4B Vision, Gemma 3 4B Vision, Phi-4 Mini 3.8B, Llama 3.2 3B, SmolLM3 3B, DeepSeek R1 1.5B et Qwen2.5 Coder 3B ; `--models-max 1` limite la RAM à un seul modèle chargé à la fois
 - Mode démo hors ligne
 
 ## Architecture
@@ -120,3 +120,16 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Le texte en cours de génération est gardé dans un état séparé : la barre latérale et les messages déjà terminés ne se ré-affichent pas à chaque token.
 - Le Markdown est découpé en blocs mémoïsés : pendant le streaming, seul le dernier bloc est ré-analysé. La coloration syntaxique est mise en cache.
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
+
+
+## Modèles texte de test
+
+Les modèles texte supplémentaires sont chargés à la demande par le router :
+
+- `bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M`
+- `bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M`
+- `bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M`
+- `bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M`
+- `bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M`
+
+Le premier appel à un modèle non encore présent dans le cache déclenche son téléchargement. Un seul modèle est chargé en RAM à la fois.
