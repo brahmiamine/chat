@@ -122,6 +122,21 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
+## Android / Termux : activer le router
+
+Le router officiel de `llama-server` utilise des sous-processus. `llama.cpp` désactive `LLAMA_SUBPROCESS` par défaut sur Android. Pour utiliser le router multi-modèles dans Termux, recompilez explicitement :
+
+```bash
+cd ~/llama.cpp
+git pull --ff-only
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=ON
+cmake --build build -j2 --target llama-server
+```
+
+Le script `start-ai.sh` vérifie désormais ce flag avant de démarrer et affiche ces commandes si le build Android ne l'inclut pas.
+
+> Le projet upstream considère le spawning de sous-processus non supporté/sandbox-friendly par défaut sur les OS mobiles ; Termux peut néanmoins être recompilé explicitement avec ce flag pour tester le router.
+
 ## Modèles texte de test
 
 Les modèles texte supplémentaires sont chargés à la demande par le router :
