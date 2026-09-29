@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { HealthStatus, ModelEntry } from '../../types';
 import { modelLabel } from '../../lib/settings';
-import { ChevronIcon, MenuIcon, SquarePenIcon } from '../ui/Icons';\nimport { BrandLogo } from '../ui/BrandLogo';
+import { ChevronIcon, MenuIcon, SquarePenIcon } from '../ui/Icons';
+import { BrandLogo } from '../ui/BrandLogo';
 
 const STATUS: Record<HealthStatus, [string, string]> = {
   online: ['var(--ok)', 'En ligne'],
