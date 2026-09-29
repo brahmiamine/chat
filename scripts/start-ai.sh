@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Lueur + router Python Android + llama.cpp + Serveo
+# Lueur + router Python Android + llama.cpp + ngrok
 #
-# Cette version utilise un tunnel SSH Serveo gratuit.
+# Cette version utilise ngrok pour exposer Lueur en HTTPS.
 # Le router Python garde un seul llama-server / modèle chargé en RAM à la fois.
 #
 # Usage :
@@ -20,14 +20,35 @@ ROUTER_SCRIPT="$HOME/lueur-router.py"
 
 ROUTER_LOG="$HOME/lueur-router.log"
 MODEL_LOG="$HOME/llama-model.log"
-TUNNEL_LOG="$HOME/serveo.log"
+TUNNEL_LOG="$HOME/ngrok.log"
 URL_FILE="$HOME/ai-url.txt"
+ENV_FILE="$HOME/.lueur.env"
+
+# Configuration facultative :
+#   export LUEUR_NGROK_URL='https://mon-domaine.ngrok.app'
+# L'authtoken ngrok doit rester hors du dépôt :
+#   ~/ngrok config add-authtoken TON_TOKEN
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+fi
+
+LUEUR_NGROK_URL="${LUEUR_NGROK_URL:-}"
 
 ROUTER_PAT='lueur-router\.py'
 LS_PAT='(^|/)llama-server( |$)'
+NGROK_PAT='(^|/)ngrok( |$).*http( |$).*8080'
 SERVEO_PAT='ssh .*serveo\.net'
 LHR_PAT='ssh .*localhost\.run'
 CF_PAT='(^|/)cloudflared( |$)'
+
+if command -v ngrok >/dev/null 2>&1; then
+  NGROK_BIN="$(command -v ngrok)"
+elif [ -x "$HOME/ngrok" ]; then
+  NGROK_BIN="$HOME/ngrok"
+else
+  NGROK_BIN=""
+fi
 
 health_ok() {
   curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
@@ -42,11 +63,18 @@ router_running() {
 }
 
 tunnel_running() {
-  pgrep -f "$SERVEO_PAT" >/dev/null 2>&1
+  pgrep -f "$NGROK_PAT" >/dev/null 2>&1
 }
 
 tunnel_url() {
-  grep -Eo 'https://[A-Za-z0-9.-]+\.(serveousercontent\.com|serveo\.net)' "$TUNNEL_LOG" 2>/dev/null | tail -1
+  curl -fsS -m 3 "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | \
+    python -c 'import json,sys
+try:
+    data=json.load(sys.stdin)
+    urls=[t.get("public_url","") for t in data.get("tunnels",[]) if t.get("public_url","").startswith("https://")]
+    print(urls[0] if urls else "")
+except Exception:
+    print("")' 2>/dev/null
 }
 
 public_health_ok() {
@@ -69,7 +97,8 @@ stop_all() {
   stop_proc "$ROUTER_PAT"
   stop_proc "$LS_PAT"
 
-  # Nettoie tous les tunnels utilisés précédemment.
+  # Nettoie le tunnel actuel ainsi que les anciennes solutions.
+  stop_proc "$NGROK_PAT"
   stop_proc "$SERVEO_PAT"
   stop_proc "$LHR_PAT"
   stop_proc "$CF_PAT"
@@ -92,13 +121,6 @@ if ! command -v python >/dev/null 2>&1; then
   echo "❌ Python n'est pas installé dans Termux."
   echo "Installe-le avec :"
   echo "  pkg install python -y"
-  exit 1
-fi
-
-if ! command -v ssh >/dev/null 2>&1; then
-  echo "❌ OpenSSH n'est pas installé dans Termux."
-  echo "Installe-le avec :"
-  echo "  pkg install openssh -y"
   exit 1
 fi
 
@@ -179,51 +201,53 @@ fi
 
 echo "✅ Router prêt"
 
-start_serveo() {
-  : > "$TUNNEL_LOG"
+# --- Tunnel ngrok ---
+if [ -z "$NGROK_BIN" ]; then
+  echo "❌ ngrok n'est pas installé."
+  echo
+  echo "Installation Termux ARM64 :"
+  echo "  cd ~"
+  echo "  curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz"
+  echo "  chmod +x ~/ngrok"
+  echo
+  echo "Puis ajoute ton authtoken :"
+  echo "  ~/ngrok config add-authtoken TON_TOKEN_NGROK"
+  exit 1
+fi
 
-  nohup ssh \
-    -T \
-    -o BatchMode=yes \
-    -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
-    -o ExitOnForwardFailure=yes \
-    -R "80:127.0.0.1:$PORT" \
-    serveo.net \
-    > "$TUNNEL_LOG" 2>&1 &
-
-  for _ in $(seq 1 30); do
-    [ -n "$(tunnel_url)" ] && return 0
-    tunnel_running || return 1
-    sleep 1
-  done
-  return 1
-}
-
-# --- Tunnel Serveo ---
 if tunnel_running && [ -n "$(tunnel_url)" ]; then
-  echo "🌐 Tunnel Serveo déjà actif"
+  echo "🌐 Tunnel ngrok déjà actif"
 else
+  stop_proc "$NGROK_PAT"
   stop_proc "$SERVEO_PAT"
   stop_proc "$LHR_PAT"
   stop_proc "$CF_PAT"
 
-  echo "🌐 Ouverture du tunnel Serveo..."
-  start_serveo || true
+  echo "🌐 Ouverture du tunnel ngrok..."
+  : > "$TUNNEL_LOG"
+
+  NGROK_ARGS=(http "$PORT" --log=stdout --log-format=json)
+  if [ -n "$LUEUR_NGROK_URL" ]; then
+    NGROK_ARGS+=(--url "$LUEUR_NGROK_URL")
+  fi
+
+  nohup "$NGROK_BIN" "${NGROK_ARGS[@]}" > "$TUNNEL_LOG" 2>&1 &
+
+  for _ in $(seq 1 30); do
+    [ -n "$(tunnel_url)" ] && break
+    if ! tunnel_running; then
+      echo "❌ ngrok s'est arrêté. Dernières lignes :"
+      tail -n 30 "$TUNNEL_LOG"
+      echo
+      echo "Si l'authtoken n'est pas encore configuré :"
+      echo "  $NGROK_BIN config add-authtoken TON_TOKEN_NGROK"
+      exit 1
+    fi
+    sleep 1
+  done
 fi
 
 URL="$(tunnel_url)"
-
-# Serveo peut parfois fournir un hostname gratuit dont le certificat TLS n'est
-# pas encore prêt. Dans ce cas, on reconnecte une fois pour obtenir un nouvel URL.
-if [ -n "$URL" ] && ! public_health_ok "$URL"; then
-  echo "⚠️  URL Serveo non joignable en HTTPS, nouvelle tentative..."
-  stop_proc "$SERVEO_PAT"
-  sleep 2
-  start_serveo || true
-  URL="$(tunnel_url)"
-fi
 
 ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
 
@@ -254,17 +278,18 @@ if [ -n "$URL" ]; then
   echo "📦 Models: $URL/models"
 
   if public_health_ok "$URL"; then
-    echo "✅ HTTPS Serveo vérifié"
+    echo "✅ HTTPS ngrok vérifié"
   else
-    echo "⚠️  Serveo a fourni une URL mais le test HTTPS a échoué"
+    echo "⚠️  ngrok est actif mais /health n'a pas répondu au test"
     echo "   Vérifie : curl -v $URL/health"
   fi
 else
-  echo "⚠️ URL Serveo introuvable"
+  echo "⚠️ URL ngrok introuvable"
   echo "   tail -n 30 $TUNNEL_LOG"
 fi
 
 echo "📱 Local : http://127.0.0.1:$PORT"
+echo "🛠️ ngrok UI : http://127.0.0.1:4040"
 echo
 echo "Logs router : tail -f $ROUTER_LOG"
 echo "Logs modèle : tail -f $MODEL_LOG"
