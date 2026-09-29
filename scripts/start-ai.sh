@@ -1,9 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Lueur + router Python Android + llama.cpp + Cloudflare Named Tunnel
+# Lueur + router Python Android + llama.cpp + localhost.run
 #
-# Le router officiel de llama.cpp dépend de LLAMA_SUBPROCESS, qui ne compile
-# pas correctement sur Android/Bionic. Cette version utilise un petit router
-# Python compatible Termux et garde un seul llama-server chargé à la fois.
+# Cette version utilise un tunnel SSH localhost.run gratuit au lieu de Cloudflare.
+# Le router Python garde un seul llama-server / modèle chargé en RAM à la fois.
 #
 # Usage :
 #   ~/start-ai.sh
@@ -13,7 +12,6 @@
 PORT=8080
 MODEL_PORT=8081
 CTX=4096
-# Threads CPU pour llama-server (≈ nombre de cœurs performants du téléphone)
 THREADS="${LUEUR_THREADS:-4}"
 
 UI_DIR="$HOME/lueur-ui"
@@ -22,24 +20,14 @@ ROUTER_SCRIPT="$HOME/lueur-router.py"
 
 ROUTER_LOG="$HOME/lueur-router.log"
 MODEL_LOG="$HOME/llama-model.log"
-TUNNEL_LOG="$HOME/cloudflared.log"
+TUNNEL_LOG="$HOME/localhost-run.log"
 URL_FILE="$HOME/ai-url.txt"
-ENV_FILE="$HOME/.lueur.env"
-
-# Configuration persistante facultative :
-#   export CLOUDFLARE_TUNNEL_TOKEN='...'
-#   export LUEUR_PUBLIC_URL='https://ai.example.com'
-if [ -f "$ENV_FILE" ]; then
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
-fi
-
-CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
-LUEUR_PUBLIC_URL="${LUEUR_PUBLIC_URL:-}"
 
 ROUTER_PAT='lueur-router\.py'
 LS_PAT='(^|/)llama-server( |$)'
-CF_PAT='(^|/)cloudflared tunnel .*run'
+LHR_PAT='ssh .*localhost\.run'
+CF_PAT='(^|/)cloudflared( |$)'
+SERVEO_PAT='ssh .*serveo\.net'
 
 health_ok() {
   curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
@@ -54,14 +42,17 @@ router_running() {
 }
 
 tunnel_running() {
-  pgrep -f "$CF_NAMED_PAT" >/dev/null 2>&1
+  pgrep -f "$LHR_PAT" >/dev/null 2>&1
 }
 
+tunnel_url() {
+  grep -Eo 'https://[A-Za-z0-9.-]+\.(lhr\.life|localhost\.run)' "$TUNNEL_LOG" 2>/dev/null | tail -1
+}
 
 stop_proc() {
   pkill -f "$1" 2>/dev/null || return 0
   for _ in $(seq 1 15); do
-    pgrep -f "$1" >/dev/null || return 0
+    pgrep -f "$1" >/dev/null 2>&1 || return 0
     sleep 1
   done
   pkill -9 -f "$1" 2>/dev/null || true
@@ -72,13 +63,17 @@ stop_all() {
   # Le router arrête normalement son llama-server enfant.
   stop_proc "$ROUTER_PAT"
   stop_proc "$LS_PAT"
+
+  # Arrête le tunnel actuel ainsi que d'anciens tunnels éventuellement restés actifs.
+  stop_proc "$LHR_PAT"
   stop_proc "$CF_PAT"
+  stop_proc "$SERVEO_PAT"
 }
 
 case "${1:-}" in
   stop)
     stop_all
-    echo "🛑 Lueur, modèle IA et tunnel arrêtés"
+    echo "🛑 Lueur, modèle IA et tunnels arrêtés"
     exit 0
     ;;
   restart)
@@ -92,6 +87,13 @@ if ! command -v python >/dev/null 2>&1; then
   echo "❌ Python n'est pas installé dans Termux."
   echo "Installe-le avec :"
   echo "  pkg install python -y"
+  exit 1
+fi
+
+if ! command -v ssh >/dev/null 2>&1; then
+  echo "❌ OpenSSH n'est pas installé dans Termux."
+  echo "Installe-le avec :"
+  echo "  pkg install openssh -y"
   exit 1
 fi
 
@@ -172,51 +174,43 @@ fi
 
 echo "✅ Router prêt"
 
-# --- Cloudflare Named Tunnel ---
-# Les Quick Tunnels trycloudflare.com ne supportent pas correctement SSE.
-# Le tunnel nommé utilise un hostname stable configuré dans Cloudflare et
-# relaie correctement le streaming de Lueur.
-TUNNEL_ACTIVE=0
-
-if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ]; then
-  if tunnel_running; then
-    echo "🌐 Cloudflare Named Tunnel déjà actif"
-    TUNNEL_ACTIVE=1
-  else
-    stop_proc "$CF_PAT"
-    echo "🌐 Ouverture du Cloudflare Named Tunnel..."
-    : > "$TUNNEL_LOG"
-
-    nohup cloudflared tunnel \
-      --protocol auto \
-      run \
-      --token "$CLOUDFLARE_TUNNEL_TOKEN" \
-      > "$TUNNEL_LOG" 2>&1 &
-
-    for _ in $(seq 1 30); do
-      if tunnel_running && grep -Eq 'Registered tunnel connection|Connection .* registered|INF.*Registered' "$TUNNEL_LOG" 2>/dev/null; then
-        TUNNEL_ACTIVE=1
-        break
-      fi
-      if ! tunnel_running; then
-        break
-      fi
-      sleep 1
-    done
-
-    # Certaines versions de cloudflared changent le texte des logs :
-    # si le processus tourne encore après l'attente, on considère le tunnel actif.
-    tunnel_running && TUNNEL_ACTIVE=1
-  fi
+# --- Tunnel localhost.run ---
+if tunnel_running && [ -n "$(tunnel_url)" ]; then
+  echo "🌐 Tunnel localhost.run déjà actif"
 else
-  echo "⚠️  Cloudflare Named Tunnel non configuré."
-  echo "   Le mode local reste disponible."
-  echo "   Configure $ENV_FILE avec CLOUDFLARE_TUNNEL_TOKEN."
+  stop_proc "$LHR_PAT"
+  # Nettoie aussi les anciens tunnels Cloudflare/Serveo.
+  stop_proc "$CF_PAT"
+  stop_proc "$SERVEO_PAT"
+
+  echo "🌐 Ouverture du tunnel localhost.run..."
+  : > "$TUNNEL_LOG"
+
+  nohup ssh \
+    -T \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes \
+    -R "80:127.0.0.1:$PORT" \
+    nokey@localhost.run \
+    > "$TUNNEL_LOG" 2>&1 &
+
+  for _ in $(seq 1 30); do
+    [ -n "$(tunnel_url)" ] && break
+    if ! tunnel_running; then
+      echo "❌ Le tunnel localhost.run s'est arrêté. Dernières lignes :"
+      tail -n 30 "$TUNNEL_LOG"
+      break
+    fi
+    sleep 1
+  done
 fi
 
 ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
 
-URL="$LUEUR_PUBLIC_URL"
+URL="$(tunnel_url)"
 
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -233,8 +227,7 @@ echo "💾 Un seul modèle est chargé en RAM à la fois."
 echo "📥 Le premier appel à un modèle peut déclencher son téléchargement."
 echo
 
-if [ "$TUNNEL_ACTIVE" = "1" ] && [ -n "$URL" ]; then
-  URL="${URL%/}"
+if [ -n "$URL" ]; then
   echo "$URL" > "$URL_FILE"
   CLIP=""
   if command -v termux-clipboard-set >/dev/null 2>&1; then
@@ -244,11 +237,9 @@ if [ "$TUNNEL_ACTIVE" = "1" ] && [ -n "$URL" ]; then
   echo "🔗 Lueur : $URL$CLIP"
   echo "🤖 API   : $URL/v1/chat/completions"
   echo "📦 Models: $URL/models"
-elif [ "$TUNNEL_ACTIVE" = "1" ]; then
-  echo "✅ Cloudflare Named Tunnel actif"
-  echo "⚠️  Ajoute LUEUR_PUBLIC_URL dans $ENV_FILE pour afficher ton hostname."
 else
-  echo "🌐 Public : désactivé (Named Tunnel non configuré)"
+  echo "⚠️ URL localhost.run introuvable"
+  echo "   tail -n 30 $TUNNEL_LOG"
 fi
 
 echo "📱 Local : http://127.0.0.1:$PORT"
