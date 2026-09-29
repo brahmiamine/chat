@@ -44,7 +44,7 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
               className="field mono"
               value={s.baseUrl}
               onChange={e => update({ baseUrl: e.target.value })}
-              placeholder="https://searched-track-dsc-perhaps.trycloudflare.com"
+              placeholder="https://below-cancer-loads-dat.trycloudflare.com"
               inputMode="url"
               spellCheck={false}
               autoComplete="off"
