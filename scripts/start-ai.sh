@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Lueur + router Python Android + llama.cpp + localhost.run
+# Lueur + router Python Android + llama.cpp + Serveo
 #
-# Cette version utilise un tunnel SSH localhost.run gratuit au lieu de Cloudflare.
+# Cette version utilise un tunnel SSH Serveo gratuit.
 # Le router Python garde un seul llama-server / modèle chargé en RAM à la fois.
 #
 # Usage :
@@ -20,14 +20,14 @@ ROUTER_SCRIPT="$HOME/lueur-router.py"
 
 ROUTER_LOG="$HOME/lueur-router.log"
 MODEL_LOG="$HOME/llama-model.log"
-TUNNEL_LOG="$HOME/localhost-run.log"
+TUNNEL_LOG="$HOME/serveo.log"
 URL_FILE="$HOME/ai-url.txt"
 
 ROUTER_PAT='lueur-router\.py'
 LS_PAT='(^|/)llama-server( |$)'
+SERVEO_PAT='ssh .*serveo\.net'
 LHR_PAT='ssh .*localhost\.run'
 CF_PAT='(^|/)cloudflared( |$)'
-SERVEO_PAT='ssh .*serveo\.net'
 
 health_ok() {
   curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
@@ -42,11 +42,17 @@ router_running() {
 }
 
 tunnel_running() {
-  pgrep -f "$LHR_PAT" >/dev/null 2>&1
+  pgrep -f "$SERVEO_PAT" >/dev/null 2>&1
 }
 
 tunnel_url() {
-  grep -Eo 'https://[A-Za-z0-9.-]+\.(lhr\.life|localhost\.run)' "$TUNNEL_LOG" 2>/dev/null | tail -1
+  grep -Eo 'https://[A-Za-z0-9.-]+\.(serveousercontent\.com|serveo\.net)' "$TUNNEL_LOG" 2>/dev/null | tail -1
+}
+
+public_health_ok() {
+  local url="${1:-}"
+  [ -n "$url" ] || return 1
+  curl -fsS -m 10 "$url/health" 2>/dev/null | grep -q '"status"'
 }
 
 stop_proc() {
@@ -60,14 +66,13 @@ stop_proc() {
 }
 
 stop_all() {
-  # Le router arrête normalement son llama-server enfant.
   stop_proc "$ROUTER_PAT"
   stop_proc "$LS_PAT"
 
-  # Arrête le tunnel actuel ainsi que d'anciens tunnels éventuellement restés actifs.
+  # Nettoie tous les tunnels utilisés précédemment.
+  stop_proc "$SERVEO_PAT"
   stop_proc "$LHR_PAT"
   stop_proc "$CF_PAT"
-  stop_proc "$SERVEO_PAT"
 }
 
 case "${1:-}" in
@@ -174,16 +179,7 @@ fi
 
 echo "✅ Router prêt"
 
-# --- Tunnel localhost.run ---
-if tunnel_running && [ -n "$(tunnel_url)" ]; then
-  echo "🌐 Tunnel localhost.run déjà actif"
-else
-  stop_proc "$LHR_PAT"
-  # Nettoie aussi les anciens tunnels Cloudflare/Serveo.
-  stop_proc "$CF_PAT"
-  stop_proc "$SERVEO_PAT"
-
-  echo "🌐 Ouverture du tunnel localhost.run..."
+start_serveo() {
   : > "$TUNNEL_LOG"
 
   nohup ssh \
@@ -194,23 +190,42 @@ else
     -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes \
     -R "80:127.0.0.1:$PORT" \
-    nokey@localhost.run \
+    serveo.net \
     > "$TUNNEL_LOG" 2>&1 &
 
   for _ in $(seq 1 30); do
-    [ -n "$(tunnel_url)" ] && break
-    if ! tunnel_running; then
-      echo "❌ Le tunnel localhost.run s'est arrêté. Dernières lignes :"
-      tail -n 30 "$TUNNEL_LOG"
-      break
-    fi
+    [ -n "$(tunnel_url)" ] && return 0
+    tunnel_running || return 1
     sleep 1
   done
+  return 1
+}
+
+# --- Tunnel Serveo ---
+if tunnel_running && [ -n "$(tunnel_url)" ]; then
+  echo "🌐 Tunnel Serveo déjà actif"
+else
+  stop_proc "$SERVEO_PAT"
+  stop_proc "$LHR_PAT"
+  stop_proc "$CF_PAT"
+
+  echo "🌐 Ouverture du tunnel Serveo..."
+  start_serveo || true
+fi
+
+URL="$(tunnel_url)"
+
+# Serveo peut parfois fournir un hostname gratuit dont le certificat TLS n'est
+# pas encore prêt. Dans ce cas, on reconnecte une fois pour obtenir un nouvel URL.
+if [ -n "$URL" ] && ! public_health_ok "$URL"; then
+  echo "⚠️  URL Serveo non joignable en HTTPS, nouvelle tentative..."
+  stop_proc "$SERVEO_PAT"
+  sleep 2
+  start_serveo || true
+  URL="$(tunnel_url)"
 fi
 
 ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
-
-URL="$(tunnel_url)"
 
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -237,8 +252,15 @@ if [ -n "$URL" ]; then
   echo "🔗 Lueur : $URL$CLIP"
   echo "🤖 API   : $URL/v1/chat/completions"
   echo "📦 Models: $URL/models"
+
+  if public_health_ok "$URL"; then
+    echo "✅ HTTPS Serveo vérifié"
+  else
+    echo "⚠️  Serveo a fourni une URL mais le test HTTPS a échoué"
+    echo "   Vérifie : curl -v $URL/health"
+  fi
 else
-  echo "⚠️ URL localhost.run introuvable"
+  echo "⚠️ URL Serveo introuvable"
   echo "   tail -n 30 $TUNNEL_LOG"
 fi
 
