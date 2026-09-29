@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Conversation } from '../../types';
 import { KBD } from '../../lib/chat';
 import { ConversationItem } from './ConversationItem';
-import { PanelIcon, PlusIcon, SearchIcon, SettingsIcon, StarIcon, XIcon } from '../ui/Icons';
+import { PanelIcon, PlusIcon, SearchIcon, SettingsIcon, XIcon } from '../ui/Icons';\nimport { BrandLogo } from '../ui/BrandLogo';
 import { Tooltip } from '../ui/Tooltip';
 
 interface Props {
@@ -72,7 +72,7 @@ export const Sidebar = memo(function Sidebar(props: Props) {
       <aside className={cls} aria-label="Conversations" inert={isMobile && !drawerOpen ? true : undefined}>
         {mini ? (
           <div className="sb-mini">
-            <div className="sb-mini-logo"><StarIcon /></div>
+            <div className="sb-mini-logo"><BrandLogo size={28} /></div>
             <MiniButton label="Ouvrir la barre latérale" onClick={() => onCollapse(false)}><PanelIcon /></MiniButton>
             <MiniButton label="Nouvelle conversation" onClick={onNewChat}><PlusIcon /></MiniButton>
             <MiniButton label="Rechercher" onClick={onOpenSearch}><SearchIcon /></MiniButton>
@@ -82,7 +82,7 @@ export const Sidebar = memo(function Sidebar(props: Props) {
         ) : (
           <div className="sb-inner">
             <div className="sb-top">
-              <div className="sb-brand"><StarIcon /><span>Lueur</span></div>
+              <div className="sb-brand"><BrandLogo size={28} /><span>Lueur</span></div>
               <button
                 className="sb-toggle icon-btn ghost"
                 aria-label={isMobile ? 'Fermer le menu' : 'Réduire la barre latérale'}
