@@ -134,7 +134,13 @@ export async function* streamChat(
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
-        if (!line.startsWith('data:')) continue; // comments, `event:` lines, blanks
+        // Router/model-loading keepalive. Yielding an empty token lets useChat
+        // refresh its inactivity timeout without displaying anything.
+        if (line.startsWith(':')) {
+          yield '';
+          continue;
+        }
+        if (!line.startsWith('data:')) continue; // `event:` lines, blanks
         const data = line.slice(5).trim();
         if (data === '[DONE]') return;
         let chunk: any;

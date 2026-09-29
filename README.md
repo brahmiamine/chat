@@ -122,20 +122,42 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
-## Android / Termux : activer le router
+## Android / Termux : router multi-modèles
 
-Le router officiel de `llama-server` utilise des sous-processus. `llama.cpp` désactive `LLAMA_SUBPROCESS` par défaut sur Android. Pour utiliser le router multi-modèles dans Termux, recompilez explicitement :
+Le router officiel de `llama-server` dépend de `LLAMA_SUBPROCESS`. Ce support est désactivé par défaut sur Android et ne compile pas actuellement sur Bionic/Termux à cause de `posix_spawn_file_actions_addchdir_np`.
+
+Lueur utilise donc `scripts/model-router.py`, un petit router HTTP Python compatible Termux :
+
+```text
+Cloudflare / Lueur :8080
+        ↓
+router Python
+        ↓
+llama-server :8081
+        ↓
+1 seul modèle chargé à la fois
+```
+
+Compilez `llama.cpp` en mode Android normal, sans subprocess :
 
 ```bash
 cd ~/llama.cpp
 git pull --ff-only
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=ON
+rm -rf build
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=OFF
 cmake --build build -j2 --target llama-server
 ```
 
-Le script `start-ai.sh` vérifie désormais ce flag avant de démarrer et affiche ces commandes si le build Android ne l'inclut pas.
+Puis installez Python si nécessaire et relancez Lueur :
 
-> Le projet upstream considère le spawning de sous-processus non supporté/sandbox-friendly par défaut sur les OS mobiles ; Termux peut néanmoins être recompilé explicitement avec ce flag pour tester le router.
+```bash
+pkg install python -y
+curl -fsSL https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/start-ai.sh -o ~/start-ai.sh
+chmod +x ~/start-ai.sh
+~/start-ai.sh restart
+```
+
+Le router démarre automatiquement le modèle demandé par le champ OpenAI `model`, arrête le précédent, attend son chargement et relaie le streaming. Des commentaires SSE gardent la connexion ouverte pendant un premier téléchargement long.
 
 ## Modèles texte de test
 
