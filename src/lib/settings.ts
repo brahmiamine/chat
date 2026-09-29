@@ -2,12 +2,13 @@ import type { GenerationSettings, ModelEntry, Settings } from '../types';
 
 const env = import.meta.env;
 
+const DEFAULT_MODEL_ID = env.VITE_LLM_MODEL || 'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M';
+
 export const DEFAULT_MODELS: ModelEntry[] = [
-  { id: env.VITE_LLM_MODEL || 'mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M', label: 'Qwen3 4B' },
-  { id: 'Qwen2.5-7B-Instruct-GGUF:Q4_K_M', label: 'Qwen 7B' },
+  { id: DEFAULT_MODEL_ID, label: 'Qwen3.5 4B Vision' },
 ];
 
-export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 2048, contextSize: 8192 };
+export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 1024, contextSize: 4096 };
 
 /**
  * When the app is served by llama-server itself (`llama-server --path dist`),
@@ -36,6 +37,24 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const KEY = 'lueur.settings';
 
+const LEGACY_DEFAULT_MODELS = new Set([
+  'mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M',
+  'Qwen2.5-7B-Instruct-GGUF:Q4_K_M',
+]);
+
+function migrateDefaultModel(s: Settings): Settings {
+  const modelId = LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId;
+  const models = (s.models || [])
+    .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
+    .map(m => ({ ...m }));
+
+  if (!models.some(m => m.id === DEFAULT_MODEL_ID)) models.unshift(DEFAULT_MODELS[0]);
+
+  const contextSize = s.contextSize === 8192 ? 4096 : s.contextSize;
+  const maxTokens = s.maxTokens === 2048 ? 1024 : s.maxTokens;
+  return { ...s, models, modelId: modelId || DEFAULT_MODEL_ID, contextSize, maxTokens };
+}
+
 /** Former built-in defaults: a saved value equal to one of these follows the current default. */
 const PREVIOUS_DEFAULT_URLS = ['http://192.168.1.98:8080', 'https://searched-track-dsc-perhaps.trycloudflare.com'];
 
@@ -47,7 +66,7 @@ export function loadSettings(): Settings {
       if (s.provider !== 'demo') s.provider = 'openai-compatible'; // also migrates the prototype's "llamacpp"
       if (!Array.isArray(s.models) || !s.models.length) s.models = DEFAULT_MODELS;
       if (PREVIOUS_DEFAULT_URLS.includes(String(s.baseUrl).trim().replace(/\/+$/, ''))) s.baseUrl = DEFAULT_SETTINGS.baseUrl;
-      return s;
+      return migrateDefaultModel(s);
     }
   } catch { /* corrupted or unavailable storage */ }
   return { ...DEFAULT_SETTINGS };
@@ -57,7 +76,7 @@ export function saveSettings(s: Settings) {
   try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* quota / private mode */ }
 }
 
-/** "mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M" → "Qwen3 4B". */
+/** "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M" → "Qwen3.5 4B". */
 export function prettyModel(id: string): string {
   const s = String(id || '').split('/').pop()!.replace(/\.gguf$/i, '').replace(/[:@].*$/, '').replace(/-GGUF.*$/i, '');
   const m = s.match(/^([A-Za-z]+[\d.]*)[-_ ]?(\d+(?:\.\d+)?[BbMm])\b/);

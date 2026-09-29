@@ -229,6 +229,9 @@ textarea.field { height: auto; resize: vertical; padding: 10px 12px; line-height
 .composer textarea { display: block; width: 100%; resize: none; border: 0; outline: 0; background: transparent; font-size: 16px; line-height: 24px; padding: 6px 8px 6px 0; max-height: 156px; overflow-y: hidden; color: var(--text); }
 .composer .bar { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
 .composer .attach { margin-left: -8px; }
+.attach-status, .attach-error { margin: 6px 4px 0; font-size: 12px; line-height: 1.4; }
+.attach-status { color: var(--muted); }
+.attach-error { color: var(--bad); }
 .round-btn { width: var(--send); height: var(--send); border-radius: 50%; border: 0; display: grid; place-items: center; padding: 0; }
 .send-btn { background: var(--send-off); color: var(--faint); transition: background .15s, color .15s; }
 .send-btn.ready { background: var(--text); color: var(--bg); }

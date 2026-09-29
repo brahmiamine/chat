@@ -4,9 +4,20 @@ export type Role = 'system' | 'user' | 'assistant';
 
 export type MessageStatus = 'streaming' | 'done' | 'stopped' | 'error';
 
+export type AttachedFileKind = 'text' | 'image' | 'pdf';
+
 export interface AttachedFile {
   name: string;
-  text: string;
+  /** Optional for backward compatibility with conversations saved before multimodal support. */
+  kind?: AttachedFileKind;
+  mimeType?: string;
+  /** Extracted text for text files and text-based PDFs. */
+  text?: string;
+  /** Base64 data URL for an image attachment. */
+  dataUrl?: string;
+  /** Rendered page images for scanned/image-only PDFs. */
+  images?: string[];
+  pageCount?: number;
 }
 
 /** A user-facing, stack-trace-free error attached to a failed assistant message. */
@@ -47,17 +58,21 @@ export interface Conversation {
   updatedAt: number;
   /** Technical model id used for the conversation. */
   model: string;
-  /** Friendly model name, e.g. "Qwen3 4B". */
+  /** Friendly model name, e.g. "Qwen3.5 4B Vision". */
   modelLabel: string;
   messages: Message[];
 }
 
 // ---------- Provider / API (OpenAI-compatible) ----------
 
+export type ApiChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 /** Wire format sent to `/v1/chat/completions`. */
 export interface ApiChatMessage {
   role: Role;
-  content: string;
+  content: string | ApiChatContentPart[];
 }
 
 export interface ChatCompletionParams {

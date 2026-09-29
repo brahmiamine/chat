@@ -14,7 +14,7 @@ npm run preview    # sert dist/
 Côté serveur, lancez llama-server en écoute sur le réseau :
 
 ```bash
-llama-server -m Qwen3-4B-Instruct-2507-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --ctx-size 8192
+llama-server -hf lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M --host 127.0.0.1 --port 8080 -c 4096 -np 1 --mmproj-auto
 ```
 
 Serveur par défaut : `https://below-cancer-loads-dat.trycloudflare.com` (llama-server exposé via un tunnel Cloudflare). L’URL racine ou l’endpoint complet `…/v1/chat/completions` sont acceptés. Vous pouvez le modifier dans **Paramètres → Connexion**, ou fixer d’autres valeurs initiales dans un fichier `.env.local` (voir `.env.example`).
@@ -44,8 +44,8 @@ git clone -b dist --depth 1 https://github.com/brahmiamine/chat ~/lueur-ui
 # pour mettre à jour plus tard
 git -C ~/lueur-ui pull
 
-./build/bin/llama-server -hf mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M \
-  --host 0.0.0.0 --port 8080 -c 4096 --path ~/lueur-ui
+./build/bin/llama-server -hf lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M \
+  --host 127.0.0.1 --port 8080 -c 4096 -np 1 --mmproj-auto --path ~/lueur-ui
 cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080
 ```
 
@@ -72,7 +72,9 @@ Ouvrez ensuite directement l’URL `https://…trycloudflare.com` affichée par 
 - Thème clair / sombre / système, trois tailles de texte
 - Mise en page responsive : tiroir sur mobile, prise en compte du clavier iOS/Android, zones tactiles d’au moins 44 px
 - Entrée pour envoyer, Maj + Entrée pour aller à la ligne, ⌘/Ctrl N (ou ⇧⌘O) pour une nouvelle conversation
-- Pièces jointes texte (+), mode démo hors ligne
+- Pièces jointes **image, PDF et texte/code** : images envoyées au modèle vision ; texte des PDF extrait localement avec PDF.js ; PDF scannés convertis en images (jusqu’aux 3 premières pages)
+- Modèle par défaut **Qwen3.5 4B Vision Q4_K_M**, adapté au téléphone pour chat, rédaction, coding et vision
+- Mode démo hors ligne
 
 ## Architecture
 
@@ -93,7 +95,7 @@ src/
 │   ├── search/          # SearchDialog
 │   ├── settings/        # SettingsModal + un fichier par onglet
 │   └── ui/              # Icons, Tooltip, Segmented
-├── lib/                 # fonctions pures (titres, historique, réglages, coloration)
+├── lib/                 # fonctions pures + préparation locale images/PDF
 ├── types/               # types TypeScript partagés
 └── styles/global.css    # tokens de la maquette (clair/sombre) + styles
 ```

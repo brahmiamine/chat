@@ -6,7 +6,7 @@
 #         ~/start-ai.sh restart    tout redémarrer
 #         ~/start-ai.sh stop       tout arrêter
 
-MODEL="mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"
+MODEL="lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
 PORT=8080
 CTX=4096
 UI_DIR="$HOME/lueur-ui"
@@ -72,15 +72,17 @@ if health_ok; then
 elif server_running; then
   echo "⏳ Serveur déjà lancé, modèle en cours de chargement..."
 else
-  echo "🤖 Démarrage de Qwen..."
+  echo "🤖 Démarrage de Qwen3.5 4B Vision..."
   cd "$LLAMA_DIR" || { echo "❌ Dossier $LLAMA_DIR introuvable"; exit 1; }
   nohup ./build/bin/llama-server \
     -hf "$MODEL" \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --port "$PORT" \
     -c "$CTX" \
+    -np 1 \
+    --mmproj-auto \
     --path "$UI_DIR" \
-    --cors-origins "*" \
+    --cors-origins "https://brahmiamine.github.io" \
     > "$SERVER_LOG" 2>&1 &
 fi
 

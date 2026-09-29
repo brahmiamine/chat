@@ -1,12 +1,12 @@
 import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import type { AttachedFile } from '../../types';
 import { uid } from '../../lib/chat';
+import { ATTACHMENT_ACCEPT, prepareAttachment } from '../../lib/attachments';
 import { ArrowDownIcon, ArrowUpIcon, FileIcon, PlusIcon, StopIcon, XIcon } from '../ui/Icons';
 import { Tooltip } from '../ui/Tooltip';
 
 const MAX_H = 156; // ≈ 6 lines
-const MAX_FILE_BYTES = 400_000;
-const ACCEPT = '.txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.css,.scss,.html,.csv,.log,.yaml,.yml,.xml,.sh,.sql,.java,.go,.rs,.c,.cpp,.h,.php,.rb,.toml,.ini,.env,text/*';
+const MAX_FILES = 5;
 
 export interface ComposerHandle {
   focus: () => void;
@@ -35,6 +35,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
 ) {
   const [text, setText] = useState('');
   const [files, setFiles] = useState<Draft[]>([]);
+  const [processingFiles, setProcessingFiles] = useState(false);
+  const [fileError, setFileError] = useState('');
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -56,16 +58,18 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
         if (el) { el.focus(); el.setSelectionRange(t.length, t.length); }
       });
     },
-    clear: () => { setText(''); setFiles([]); },
+    clear: () => { setText(''); setFiles([]); setFileError(''); },
   }), []);
 
-  const canSend = (!!text.trim() || files.length > 0) && !busy;
+  const canSend = (!!text.trim() || files.length > 0) && !busy && !processingFiles;
 
   const submit = useCallback(() => {
     if (!canSend) return;
-    if (onSend(text, files.map(({ name, text: t }) => ({ name, text: t })))) {
+    const payload = files.map(({ id: _id, ...file }) => file);
+    if (onSend(text, payload)) {
       setText('');
       setFiles([]);
+      setFileError('');
     }
   }, [canSend, files, onSend, text]);
 
@@ -79,13 +83,27 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const list = [...(e.target.files || [])];
     e.target.value = '';
+    if (!list.length) return;
+
+    setFileError('');
+    setProcessingFiles(true);
     const out: Draft[] = [];
-    for (const f of list) {
-      if (f.size > MAX_FILE_BYTES) continue;
-      try { out.push({ id: uid(), name: f.name, text: await f.text() }); } catch { /* unreadable */ }
+    const remaining = Math.max(0, MAX_FILES - files.length);
+
+    try {
+      for (const f of list.slice(0, remaining)) {
+        try {
+          out.push({ id: uid(), ...(await prepareAttachment(f)) });
+        } catch (err) {
+          setFileError(err instanceof Error ? err.message : `Impossible de lire ${f.name}`);
+        }
+      }
+      if (list.length > remaining) setFileError(`Maximum ${MAX_FILES} pièces jointes par message.`);
+      if (out.length) setFiles(x => [...x, ...out].slice(0, MAX_FILES));
+    } finally {
+      setProcessingFiles(false);
+      ta.current?.focus();
     }
-    setFiles(x => [...x, ...out]);
-    ta.current?.focus();
   };
 
   return (
@@ -118,12 +136,17 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
         />
         <div className="bar">
           <div className="attach">
-            <Tooltip label="Joindre un fichier texte" placement="top-left">
-              <button className="round-btn ghost" aria-label="Joindre un fichier texte" onClick={() => fileInput.current?.click()}>
+            <Tooltip label="Joindre une image, un PDF ou un fichier" placement="top-left">
+              <button
+                className="round-btn ghost"
+                aria-label="Joindre une image, un PDF ou un fichier"
+                disabled={processingFiles || files.length >= MAX_FILES}
+                onClick={() => fileInput.current?.click()}
+              >
                 <PlusIcon />
               </button>
             </Tooltip>
-            <input ref={fileInput} type="file" multiple accept={ACCEPT} onChange={onFile} style={{ display: 'none' }} />
+            <input ref={fileInput} type="file" multiple accept={ATTACHMENT_ACCEPT} onChange={onFile} style={{ display: 'none' }} />
           </div>
           {generating ? (
             <button className="round-btn stop-btn" aria-label="Arrêter la génération" onClick={onStop}><StopIcon /></button>
@@ -133,6 +156,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
             </button>
           )}
         </div>
+        {processingFiles && <div className="attach-status">Préparation des pièces jointes…</div>}
+        {!!fileError && <div className="attach-error" role="alert">{fileError}</div>}
       </div>
       {showHint && <div className="composer-hint">Entrée pour envoyer · Maj + Entrée pour aller à la ligne</div>}
     </div>
