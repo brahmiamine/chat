@@ -74,7 +74,7 @@ export function ModelTab({ settings: s, update, loadServerInfo }: SettingsModalP
             value={newId}
             onChange={e => setNewId(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') addModel(); }}
-            placeholder="Identifiant, ex. Qwen3-8B-Instruct"
+            placeholder="Identifiant, ex. lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
             spellCheck={false}
           />
           <button className="btn-outline" onClick={addModel}>Ajouter</button>
