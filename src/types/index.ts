@@ -161,7 +161,6 @@ export type ModelProviderId =
   | 'mistral'
   | 'openrouter'
   | 'cloudflare'
-  | 'cerebras'
   | 'huggingface'
   | 'nvidia'
   | 'cohere'
