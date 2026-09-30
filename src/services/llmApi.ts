@@ -193,6 +193,7 @@ export async function getServerInfo(cfg: ProviderConfig): Promise<ServerInfo> {
     const p = props.value;
     out.modelPath = p.model_path;
     out.nCtx = p.default_generation_settings?.n_ctx ?? p.n_ctx;
+    if (p.providers && typeof p.providers === 'object') out.providers = p.providers;
   }
   return out;
 }
