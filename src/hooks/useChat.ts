@@ -11,8 +11,8 @@
  * - Explicit "Stop" still cancels the router-owned job.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AssistantMessage, AttachedFile, ChatError, Conversation, MessageStatus, Settings, UserMessage } from '../types';
-import { LLMApiError, llmApi } from '../services/llmApi';
+import type { AssistantMessage, AttachedFile, ChatError, Conversation, GenerationMetrics, MessageStatus, Settings, UserMessage } from '../types';
+import { generationMetrics, LLMApiError, llmApi } from '../services/llmApi';
 import { demoStream } from '../services/demoProvider';
 import { conversationDb } from '../services/db';
 import { diagnoseError, type AbortReason } from '../services/errors';
@@ -22,6 +22,39 @@ import { currentModel } from '../lib/settings';
 const INACTIVITY_TIMEOUT_MS = 90_000;
 const CHECKPOINT_MS = 1500;
 const ACTIVE_KEY = 'lueur.active';
+
+function estimateOutputTokens(text: string): number {
+  const chars = Array.from(text || '').length;
+  return chars ? Math.max(1, Math.round(chars / 4)) : 0;
+}
+
+function fallbackMetrics(
+  model: ReturnType<typeof currentModel>,
+  startedAt: number,
+  firstTokenAt: number | undefined,
+  completedAt: number,
+  content: string,
+): GenerationMetrics {
+  const outputTokens = estimateOutputTokens(content);
+  const generationMs = firstTokenAt ? Math.max(0, completedAt - firstTokenAt) : undefined;
+  return {
+    provider: model.provider || 'custom',
+    providerLabel: model.providerLabel,
+    modelId: model.id,
+    resolvedModel: model.id.replace(/^[a-z]+::/i, ''),
+    outputTokens,
+    totalTokens: outputTokens,
+    tokenCountSource: 'estimated',
+    ttftMs: firstTokenAt ? Math.max(0, firstTokenAt - startedAt) : undefined,
+    durationMs: Math.max(0, completedAt - startedAt),
+    generationMs,
+    tokensPerSecond: generationMs && outputTokens ? Number((outputTokens / (generationMs / 1000)).toFixed(2)) : undefined,
+    costUsd: model.provider === 'local' ? 0 : null,
+    reconnects: 0,
+    startedAt,
+    completedAt,
+  };
+}
 
 export interface LiveStream {
   cid: string;
@@ -113,12 +146,13 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     content: string,
     status: MessageStatus,
     error: ChatError | null = null,
+    metrics?: GenerationMetrics,
   ) => {
     patchConv(cid, c => ({
       ...c,
       messages: c.messages.map(m => (
         m.id === aid
-          ? { ...m, content, status, error } as AssistantMessage
+          ? { ...m, content, status, error, metrics: metrics || m.metrics } as AssistantMessage
           : m
       )),
     }));
@@ -133,6 +167,9 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     const s = { ...settingsRef.current, ...overrides };
     const model = currentModel(s);
     const history = buildHistory(conv.messages, s);
+    const generationStartedAt = Date.now();
+    let firstTokenAt: number | undefined;
+    let metrics: GenerationMetrics | undefined;
     const lastUser = [...conv.messages].reverse().find((m): m is UserMessage => m.role === 'user');
 
     const aid = uid();
@@ -156,7 +193,14 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       status: 'streaming',
       author: model.label,
       generationId: current.jobId,
-      createdAt: Date.now(),
+      metrics: {
+        provider: model.provider || 'custom',
+        providerLabel: model.providerLabel,
+        modelId: model.id,
+        resolvedModel: model.id.replace(/^[a-z]+::/i, ''),
+        startedAt: generationStartedAt,
+      },
+      createdAt: generationStartedAt,
     };
     patchConv(cid, c => ({
       ...c,
@@ -267,6 +311,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       for await (const token of stream) {
         arm();
         if (!token) continue;
+        if (!firstTokenAt) firstTokenAt = Date.now();
         pending += token;
         if (!raf) raf = requestAnimationFrame(flush);
       }
@@ -294,8 +339,21 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
 
     full += pending;
 
+    if (current.background && current.jobId) {
+      try {
+        const snapshot = await llmApi.getBackgroundGeneration(
+          { baseUrl: s.baseUrl, apiKey: s.apiKey },
+          current.jobId,
+        );
+        metrics = generationMetrics(snapshot) || metrics;
+      } catch {
+        // Metrics are best-effort and must never turn a valid answer into an error.
+      }
+    }
+    metrics ||= fallbackMetrics(model, generationStartedAt, firstTokenAt, Date.now(), full);
+
     if (convsRef.current.some(c => c.id === cid)) {
-      finalize(cid, aid, full, status, error);
+      finalize(cid, aid, full, status, error, metrics);
     }
 
     if (run.current === current) run.current = null;
@@ -333,6 +391,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     run.current = current;
 
     let full = message.content || '';
+    let metrics = message.metrics;
     let pending = '';
     let raf = 0;
     let lastCheckpoint = Date.now();
@@ -352,7 +411,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
             ...c,
             messages: c.messages.map(m => (
               m.id === message.id
-                ? { ...m, content: full, status: 'streaming', error: null } as AssistantMessage
+                ? { ...m, content: full, status: 'streaming', error: null, metrics } as AssistantMessage
                 : m
             )),
           };
@@ -364,23 +423,24 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     try {
       const snapshot = await llmApi.getBackgroundGeneration(cfg, message.generationId);
       full = snapshot.content || full;
+      metrics = generationMetrics(snapshot) || metrics;
 
       patchConv(cid, c => ({
         ...c,
         messages: c.messages.map(m => (
           m.id === message.id
-            ? { ...m, content: full, error: null } as AssistantMessage
+            ? { ...m, content: full, error: null, metrics } as AssistantMessage
             : m
         )),
       }));
       persist(cid);
 
       if (snapshot.status === 'done') {
-        finalize(cid, message.id, full, 'done');
+        finalize(cid, message.id, full, 'done', null, metrics);
         return;
       }
       if (snapshot.status === 'stopped') {
-        finalize(cid, message.id, full, 'stopped');
+        finalize(cid, message.id, full, 'stopped', null, metrics);
         return;
       }
       if (snapshot.status === 'error') {
@@ -388,7 +448,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
           ? new LLMApiError(snapshot.error_code, snapshot.error || 'Background generation failed')
           : new Error(snapshot.error || 'Background generation failed');
         const diagnosed = await diagnoseError(sourceError, s.baseUrl, null);
-        finalize(cid, message.id, full, 'error', diagnosed);
+        finalize(cid, message.id, full, 'error', diagnosed, metrics);
         return;
       }
 
