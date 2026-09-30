@@ -178,6 +178,19 @@ echo "export LUEUR_NGROK_URL='https://autre-domaine.ngrok.app'" >> ~/.lueur.env
 
 Le script arrête également les anciens tunnels Serveo, localhost.run et Cloudflare lors d'un redémarrage.
 
+### Génération en arrière-plan
+
+Avec le router Termux de Lueur, une génération appartient désormais au **serveur**, pas à la connexion du navigateur. Si l'onglet est fermé, si Chrome est quitté ou si Android suspend temporairement le navigateur, llama.cpp continue à générer dans Termux.
+
+Chaque réponse en cours possède un `generationId` sauvegardé dans IndexedDB. Quand Lueur est rouvert :
+
+1. l'application retrouve la conversation et son `generationId` ;
+2. elle récupère instantanément le texte déjà généré depuis le router ;
+3. si la génération est encore en cours, elle se reconnecte au flux SSE au bon curseur ;
+4. le bouton **Stop** reste une annulation explicite et arrête réellement le job côté router.
+
+Les jobs terminés sont conservés en mémoire par le router pendant une heure pour permettre une reconnexion. Un redémarrage de Termux/router efface les jobs en mémoire.
+
 Pour tout arrêter :
 
 ```bash
