@@ -45,6 +45,11 @@ export interface AssistantMessage {
   status: MessageStatus;
   /** Display name of the model that produced the answer. */
   author?: string;
+  /**
+   * Router-owned generation id. When present, the generation can continue on
+   * the Termux server even if the browser/tab is closed, then resume later.
+   */
+  generationId?: string;
   error?: ChatError | null;
   createdAt: number;
 }
