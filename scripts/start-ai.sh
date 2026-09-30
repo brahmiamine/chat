@@ -163,6 +163,27 @@ if [ ! -r "$LOCAL_MODEL_PATH" ]; then
   exit 1
 fi
 
+# --- Bibliothèques Qualcomm requises par le build Snapdragon sous Termux ---
+mkdir -p "$SNAP_LLAMA_DIR/lib"
+
+for lib in \
+  libOpenCL.so \
+  libcdsprpc.so \
+  vendor.qti.hardware.dsp-V1-ndk.so \
+  vendor.qti.hardware.dsp@1.0.so \
+  libvmmem.so
+do
+  if [ ! -e "$SNAP_LLAMA_DIR/lib/$lib" ] && [ -r "/vendor/lib64/$lib" ]; then
+    cp "/vendor/lib64/$lib" "$SNAP_LLAMA_DIR/lib/$lib" 2>/dev/null || true
+  fi
+done
+
+if [ ! -r "$SNAP_LLAMA_DIR/lib/libOpenCL.so" ]; then
+  echo "❌ libOpenCL.so introuvable dans $SNAP_LLAMA_DIR/lib"
+  echo "   Vérifie : ls -l /vendor/lib64/libOpenCL.so"
+  exit 1
+fi
+
 # --- Interface Lueur ---
 if [ -d "$UI_DIR/.git" ]; then
   if git -C "$UI_DIR" fetch -q --depth 1 origin dist 2>/dev/null \
