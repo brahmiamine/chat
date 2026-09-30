@@ -498,6 +498,17 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
+      // The GitHub Pages frontend always sends Origin. Reject anonymous
+      // origin-less POSTs by default so the Worker is not an entirely open
+      // proxy for the provider keys. This is an abuse guard, not a replacement
+      // for Cloudflare Access if the app needs strong authentication.
+      if (!origin && clean(env.LUEUR_ALLOW_DIRECT) !== '1') {
+        return json({
+          error: {
+            message: 'Requête directe refusée. Utilise Lueur depuis https://brahmiamine.github.io/chat/.',
+          },
+        }, 403, '');
+      }
       return proxyChat(request, env, origin);
     }
 
