@@ -607,10 +607,15 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
 
             if res.status >= 400:
                 detail = res.read().decode("utf-8", "replace")
+                message = upstream_error_message(detail, res.status)
+                log(
+                    f"Provider error {job.provider} / {job.resolved_model}: "
+                    f"HTTP {res.status} - {message}"
+                )
                 set_job_terminal(
                     job,
                     "error",
-                    upstream_error_message(detail, res.status),
+                    message,
                     res.status,
                 )
                 return

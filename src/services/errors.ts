@@ -46,11 +46,43 @@ export function friendlyError(e: unknown, baseUrl: string, reason: AbortReason =
     if (st === 410) return { title: 'Ce modèle a été retiré par le fournisseur.', hint: e.message || 'Choisissez un modèle actuellement disponible chez ce fournisseur.', http: true };
     if (st === 429) return { title: 'Quota ou limite de débit atteint.', hint: 'Attendez un peu ou essayez un autre fournisseur/modèle.', http: true };
     if (st === 400) {
+      const detail = (e.message || '').trim();
+
+      if (/DEGRADED function cannot be invoked/i.test(detail)) {
+        return {
+          title: 'Endpoint NVIDIA temporairement indisponible.',
+          hint: detail,
+          http: true,
+        };
+      }
+
+      if (/unsupported parameter/i.test(detail)) {
+        return {
+          title: 'Paramètre non supporté par ce modèle.',
+          hint: detail,
+          http: true,
+        };
+      }
+
+      if (/public api endpoints|not found for account|authorization failed|permission/i.test(detail)) {
+        return {
+          title: 'Accès NVIDIA NIM non autorisé pour cette clé.',
+          hint: detail,
+          http: true,
+        };
+      }
+
+      if (/context_exceeded|maximum context|context length|\bctx\b/i.test(detail)) {
+        return {
+          title: 'Contexte trop long pour ce modèle.',
+          hint: detail || 'Réduisez le contexte ou démarrez une nouvelle conversation.',
+          http: true,
+        };
+      }
+
       return {
-        title: 'Requête refusée par le serveur.',
-        hint: /context|ctx|token/i.test(e.message)
-          ? 'La conversation dépasse peut-être la taille du contexte. Réduisez le contexte ou démarrez une nouvelle conversation.'
-          : 'Les paramètres ou le format de la requête ne sont pas acceptés par ce modèle.',
+        title: 'Requête refusée par le fournisseur (HTTP 400).',
+        hint: detail || 'Le fournisseur a refusé la requête sans donner de détail.',
         http: true,
       };
     }
