@@ -2,7 +2,8 @@
 # Lueur + router Python Android + llama.cpp + ngrok via Debian proot
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
-# Le router Python garde un seul llama-server / modèle chargé en RAM à la fois.
+# Le router Python garde un seul modèle GGUF local en RAM à la fois et peut
+# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, Cerebras et HF.
 #
 # Usage :
 #   ~/start-ai.sh
@@ -24,10 +25,23 @@ TUNNEL_LOG="$HOME/ngrok.log"
 URL_FILE="$HOME/ai-url.txt"
 ENV_FILE="$HOME/.lueur.env"
 
-# Configuration facultative :
+# Configuration persistante facultative dans ~/.lueur.env :
 #   export LUEUR_NGROK_URL='https://mon-domaine.ngrok.app'
-# Par défaut, utilise le domaine ngrok réservé pour Lueur.
-# L'authtoken ngrok reste dans Debian/proot et ne doit jamais être commité :
+#
+# Fournisseurs cloud (ajoutez uniquement ceux que vous utilisez) :
+#   export GROQ_API_KEY='...'
+#   export GEMINI_API_KEY='...'
+#   export MISTRAL_API_KEY='...'
+#   export OPENROUTER_API_KEY='...'
+#   export CEREBRAS_API_KEY='...'
+#   export HF_TOKEN='...'
+#   export CLOUDFLARE_ACCOUNT_ID='...'
+#   export CLOUDFLARE_AI_API_TOKEN='...'
+#
+# Les secrets restent sur le téléphone : ils ne sont ni envoyés au navigateur
+# ni stockés dans GitHub.
+#
+# L'authtoken ngrok reste dans Debian/proot :
 #   proot-distro login debian
 #   ~/ngrok config add-authtoken TON_TOKEN
 if [ -f "$ENV_FILE" ]; then
@@ -183,6 +197,14 @@ else
     LUEUR_UI_DIR="$UI_DIR" \
     LUEUR_LLAMA_DIR="$LLAMA_DIR" \
     LUEUR_MODEL_LOG="$MODEL_LOG" \
+    GROQ_API_KEY="${GROQ_API_KEY:-}" \
+    GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+    MISTRAL_API_KEY="${MISTRAL_API_KEY:-}" \
+    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
+    CEREBRAS_API_KEY="${CEREBRAS_API_KEY:-}" \
+    HF_TOKEN="${HF_TOKEN:-}" \
+    CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-}" \
+    CLOUDFLARE_AI_API_TOKEN="${CLOUDFLARE_AI_API_TOKEN:-}" \
     python "$ROUTER_SCRIPT" \
     > "$ROUTER_LOG" 2>&1 &
 
@@ -278,17 +300,32 @@ ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
 
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🤖 7 modèles disponibles :"
-echo "   1. Qwen3.5 4B Vision"
-echo "   2. Gemma 3 4B Vision"
-echo "   3. Phi-4 Mini 3.8B"
-echo "   4. Llama 3.2 3B"
-echo "   5. SmolLM3 3B"
-echo "   6. DeepSeek R1 1.5B"
-echo "   7. Qwen2.5 Coder 3B"
+echo "🤖 Modèles disponibles :"
+echo "   🏠 Local       : 7 modèles GGUF"
+echo "   ⚡ Groq        : GPT-OSS 120B, Qwen 3.8 27B"
+echo "   ✨ Gemini      : Gemini 3.8 Flash"
+echo "   🇫🇷 Mistral    : Mistral Small"
+echo "   🌐 OpenRouter  : Free Router"
+echo "   ☁️ Workers AI  : GPT-OSS 120B"
+echo "   🚀 Cerebras    : GPT-OSS 120B"
+echo "   🤗 HuggingFace : DeepSeek R1"
 echo
-echo "💾 Un seul modèle est chargé en RAM à la fois."
-echo "📥 Le premier appel à un modèle peut déclencher son téléchargement."
+echo "💾 Un seul modèle local est chargé en RAM à la fois."
+echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
+echo
+
+PROVIDER_COUNT=0
+[ -n "${GROQ_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${GEMINI_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${MISTRAL_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${OPENROUTER_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${CEREBRAS_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${HF_TOKEN:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] && [ -n "${CLOUDFLARE_AI_API_TOKEN:-}" ]; then
+  PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+fi
+echo "🔐 Fournisseurs cloud configurés : $PROVIDER_COUNT/7"
+echo "   Configuration : $ENV_FILE"
 echo
 
 if [ -n "$URL" ]; then
