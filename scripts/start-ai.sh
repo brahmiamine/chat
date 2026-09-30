@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Lueur + router Python Android + llama.cpp + ngrok
+# Lueur + router Python Android + llama.cpp + ngrok via Debian proot
 #
-# Cette version utilise ngrok pour exposer Lueur en HTTPS.
+# Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
 # Le router Python garde un seul llama-server / modèle chargé en RAM à la fois.
 #
 # Usage :
@@ -26,29 +26,23 @@ ENV_FILE="$HOME/.lueur.env"
 
 # Configuration facultative :
 #   export LUEUR_NGROK_URL='https://mon-domaine.ngrok.app'
-# L'authtoken ngrok doit rester hors du dépôt :
+# Par défaut, utilise le domaine ngrok réservé pour Lueur.
+# L'authtoken ngrok reste dans Debian/proot et ne doit jamais être commité :
+#   proot-distro login debian
 #   ~/ngrok config add-authtoken TON_TOKEN
 if [ -f "$ENV_FILE" ]; then
   # shellcheck disable=SC1090
   . "$ENV_FILE"
 fi
 
-LUEUR_NGROK_URL="${LUEUR_NGROK_URL:-}"
+LUEUR_NGROK_URL="${LUEUR_NGROK_URL:-https://expansile-ramiro-intertribal.ngrok-free.dev}"
 
 ROUTER_PAT='lueur-router\.py'
 LS_PAT='(^|/)llama-server( |$)'
-NGROK_PAT='(^|/)ngrok( |$).*http( |$).*8080'
+NGROK_PAT='ngrok .*http .*8080'
 SERVEO_PAT='ssh .*serveo\.net'
 LHR_PAT='ssh .*localhost\.run'
 CF_PAT='(^|/)cloudflared( |$)'
-
-if command -v ngrok >/dev/null 2>&1; then
-  NGROK_BIN="$(command -v ngrok)"
-elif [ -x "$HOME/ngrok" ]; then
-  NGROK_BIN="$HOME/ngrok"
-else
-  NGROK_BIN=""
-fi
 
 health_ok() {
   curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
@@ -63,7 +57,7 @@ router_running() {
 }
 
 tunnel_running() {
-  pgrep -f "$NGROK_PAT" >/dev/null 2>&1
+  [ -n "$(tunnel_url)" ]
 }
 
 tunnel_url() {
@@ -93,12 +87,23 @@ stop_proc() {
   sleep 1
 }
 
+stop_ngrok() {
+  # Arrête d'abord ngrok dans Debian/proot si disponible.
+  if command -v proot-distro >/dev/null 2>&1; then
+    proot-distro login debian -- sh -lc 'pkill -f "ngrok .*http .*8080" 2>/dev/null || true' \
+      >/dev/null 2>&1 || true
+  fi
+
+  # Puis nettoie d'éventuels wrappers/procès restants côté Termux.
+  stop_proc "$NGROK_PAT"
+}
+
 stop_all() {
   stop_proc "$ROUTER_PAT"
   stop_proc "$LS_PAT"
 
   # Nettoie le tunnel actuel ainsi que les anciennes solutions.
-  stop_proc "$NGROK_PAT"
+  stop_ngrok
   stop_proc "$SERVEO_PAT"
   stop_proc "$LHR_PAT"
   stop_proc "$CF_PAT"
@@ -201,50 +206,70 @@ fi
 
 echo "✅ Router prêt"
 
-# --- Tunnel ngrok ---
-if [ -z "$NGROK_BIN" ]; then
-  echo "❌ ngrok n'est pas installé."
+# --- Tunnel ngrok via Debian/proot ---
+if ! command -v proot-distro >/dev/null 2>&1; then
+  echo "❌ proot-distro n'est pas installé."
   echo
-  echo "Installation Termux ARM64 :"
-  echo "  cd ~"
-  echo "  curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz"
-  echo "  chmod +x ~/ngrok"
-  echo
-  echo "Puis ajoute ton authtoken :"
-  echo "  ~/ngrok config add-authtoken TON_TOKEN_NGROK"
+  echo "Installe-le avec :"
+  echo "  pkg install proot-distro -y"
+  echo "  proot-distro install debian"
   exit 1
 fi
 
-if tunnel_running && [ -n "$(tunnel_url)" ]; then
+if ! proot-distro login debian -- true >/dev/null 2>&1; then
+  echo "❌ Le conteneur Debian proot n'est pas installé."
+  echo
+  echo "Installe-le avec :"
+  echo "  proot-distro install debian"
+  exit 1
+fi
+
+if ! proot-distro login debian -- test -x /root/ngrok >/dev/null 2>&1; then
+  echo "❌ ngrok n'est pas installé dans Debian/proot."
+  echo
+  echo "Entre dans Debian et installe ngrok :"
+  echo "  proot-distro login debian"
+  echo "  apt update && apt install -y curl ca-certificates"
+  echo "  cd /root"
+  echo "  curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz"
+  echo "  chmod +x /root/ngrok"
+  echo "  /root/ngrok config add-authtoken TON_TOKEN_NGROK"
+  exit 1
+fi
+
+if tunnel_running; then
   echo "🌐 Tunnel ngrok déjà actif"
 else
-  stop_proc "$NGROK_PAT"
+  stop_ngrok
   stop_proc "$SERVEO_PAT"
   stop_proc "$LHR_PAT"
   stop_proc "$CF_PAT"
 
-  echo "🌐 Ouverture du tunnel ngrok..."
+  echo "🌐 Ouverture du tunnel ngrok via Debian/proot..."
   : > "$TUNNEL_LOG"
 
-  NGROK_ARGS=(http "$PORT" --log=stdout --log-format=json)
-  if [ -n "$LUEUR_NGROK_URL" ]; then
-    NGROK_ARGS+=(--url "$LUEUR_NGROK_URL")
-  fi
+  nohup proot-distro login debian -- \
+    /root/ngrok http "$PORT" \
+      --url "$LUEUR_NGROK_URL" \
+      --log=stdout \
+      --log-format=json \
+    > "$TUNNEL_LOG" 2>&1 &
 
-  nohup "$NGROK_BIN" "${NGROK_ARGS[@]}" > "$TUNNEL_LOG" 2>&1 &
-
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 40); do
     [ -n "$(tunnel_url)" ] && break
-    if ! tunnel_running; then
-      echo "❌ ngrok s'est arrêté. Dernières lignes :"
-      tail -n 30 "$TUNNEL_LOG"
-      echo
-      echo "Si l'authtoken n'est pas encore configuré :"
-      echo "  $NGROK_BIN config add-authtoken TON_TOKEN_NGROK"
-      exit 1
-    fi
     sleep 1
   done
+
+  if [ -z "$(tunnel_url)" ]; then
+    echo "❌ ngrok n'est pas devenu disponible."
+    echo "Dernières lignes :"
+    tail -n 30 "$TUNNEL_LOG"
+    echo
+    echo "Vérifie que l'authtoken est bien configuré dans Debian :"
+    echo "  proot-distro login debian"
+    echo "  ~/ngrok config add-authtoken TON_TOKEN_NGROK"
+    exit 1
+  fi
 fi
 
 URL="$(tunnel_url)"
