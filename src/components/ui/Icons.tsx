@@ -79,5 +79,6 @@ export const PlugIcon = icon(['M12 22v-5', 'M9 8V2', 'M15 8V2', 'M18 8v5a4 4 0 0
 export const SlidersIcon = icon(['M21 4h-7', 'M10 4H3', 'M21 12h-9', 'M8 12H3', 'M21 20h-5', 'M12 20H3', 'M14 2v4', 'M8 10v4', 'M16 18v4'], 16);
 export const ContrastIcon = icon([<circle cx={12} cy={12} r={10} />, 'M12 18a6 6 0 0 0 0-12v12z'], 16);
 export const GearIcon = icon([GEAR, <circle cx={12} cy={12} r={3} />], 16);
+export const ChartIcon = icon(['M3 3v18h18', 'M7 16v-5', 'M12 16V8', 'M17 16v-9'], 16);
 export const EyeIcon = icon(['M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0', <circle cx={12} cy={12} r={3} />], 16);
 export const EyeOffIcon = icon(['M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49', 'M14.084 14.158a3 3 0 0 1-4.242-4.242', 'M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143', 'm2 2 20 20'], 16);
