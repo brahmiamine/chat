@@ -152,7 +152,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       ...c,
       messages: c.messages.map(m => (
         m.id === aid
-          ? { ...m, content, status, error, metrics: metrics || m.metrics } as AssistantMessage
+          ? { ...m, content, status, error, metrics: metrics || (m as AssistantMessage).metrics } as AssistantMessage
           : m
       )),
     }));
