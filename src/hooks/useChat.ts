@@ -473,20 +473,26 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       }
       full += pending;
       pending = '';
-      finalize(cid, message.id, full, 'done');
+      try {
+        const doneSnapshot = await llmApi.getBackgroundGeneration(cfg, message.generationId);
+        metrics = generationMetrics(doneSnapshot) || metrics;
+      } catch {
+        // Keep the latest metrics snapshot already persisted.
+      }
+      finalize(cid, message.id, full, 'done', null, metrics);
     } catch (e) {
       if (current.reason === 'user') {
-        finalize(cid, message.id, full, 'stopped');
+        finalize(cid, message.id, full, 'stopped', null, metrics);
       } else if (ctrl.signal.aborted) {
         // Browser/page is going away again. Keep the persisted status streaming
         // so the next launch can reconnect to the same router job.
         return;
       } else if (e instanceof LLMApiError && e.status === 404) {
         // Router restarted or the one-hour completed-job cache expired.
-        finalize(cid, message.id, full, 'stopped');
+        finalize(cid, message.id, full, 'stopped', null, metrics);
       } else {
         const diagnosed = await diagnoseError(e, s.baseUrl, current.reason);
-        finalize(cid, message.id, full, 'error', diagnosed);
+        finalize(cid, message.id, full, 'error', diagnosed, metrics);
         if (!diagnosed?.http) onConnErrRef.current?.();
       }
     } finally {
