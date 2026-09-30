@@ -3,6 +3,8 @@ import type { GenerationSettings, ModelEntry, Settings } from '../types';
 const env = import.meta.env;
 
 const DEFAULT_MODEL_ID = 'local::qwen2.5-7b-instruct-q4_0';
+const QWEN3_MODEL_ID = 'local::qwen3-8b-q4_0';
+const SUPPORTED_LOCAL_MODEL_IDS = new Set([DEFAULT_MODEL_ID, QWEN3_MODEL_ID]);
 
 const OLD_LOCAL_MODEL_IDS = new Set([
   'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M',
@@ -28,8 +30,9 @@ const PROVIDER_LABELS = {
 } as const;
 
 export const DEFAULT_MODELS: ModelEntry[] = [
-  // Unique modèle local : Snapdragon Hexagon NPU
+  // Snapdragon Hexagon NPU — one local model loaded at a time.
   { id: DEFAULT_MODEL_ID, label: 'Qwen2.5 7B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: QWEN3_MODEL_ID, label: 'Qwen3 8B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
 
   // Cloud providers proxied securely by the Termux router.
   { id: 'groq::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
@@ -115,7 +118,7 @@ function migrateDefaultModel(s: Settings): Settings {
   const models: ModelEntry[] = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
     .filter(m => !OLD_LOCAL_MODEL_IDS.has(m.id))
-    .filter(m => String(m.provider || '') !== 'local' || m.id === DEFAULT_MODEL_ID)
+    .filter(m => String(m.provider || '') !== 'local' || SUPPORTED_LOCAL_MODEL_IDS.has(m.id))
     .filter(m => !REMOVED_MODELS.has(m.id) && !m.id.startsWith('cerebras::') && String(m.provider || '') !== 'cerebras')
     .map((m): ModelEntry => {
       const builtin = DEFAULT_MODELS.find(x => x.id === m.id);
@@ -126,7 +129,7 @@ function migrateDefaultModel(s: Settings): Settings {
         : { ...m, provider: m.provider || 'custom' };
     });
 
-  // Keep the single built-in local NPU model + cloud router models available,
+  // Keep the supported local NPU models + cloud router models available,
   // including for users who already have settings saved locally.
   for (const builtin of [...DEFAULT_MODELS].reverse()) {
     if (!models.some(m => m.id === builtin.id)) models.unshift(builtin);
