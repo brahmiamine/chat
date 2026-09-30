@@ -192,23 +192,55 @@ MODELS: dict[str, dict[str, object]] = {
         "remote_id": "deepseek-ai/DeepSeek-R1:fastest",
         "vision": False,
     },
-    "nvidia::openai/gpt-oss-120b": {
-        "label": "GPT-OSS 120B",
+    # Current NVIDIA hosted free endpoints. Retired ids are mapped below so
+    # stale browser settings continue to work until the UI refreshes.
+    "nvidia::deepseek-ai/deepseek-v4.1-flash": {
+        "label": "DeepSeek V4.1 Flash Vision",
         "provider": "nvidia",
-        "remote_id": "openai/gpt-oss-120b",
+        "remote_id": "deepseek-ai/deepseek-v4.1-flash",
+        "vision": True,
+    },
+    "nvidia::z-ai/glm-5.3": {
+        "label": "GLM-5.3",
+        "provider": "nvidia",
+        "remote_id": "z-ai/glm-5.3",
         "vision": False,
     },
-    "nvidia::deepseek-ai/deepseek-v4-flash": {
-        "label": "DeepSeek V4 Flash",
+    "nvidia::z-ai/glm-5.3-flash": {
+        "label": "GLM-5.3 Flash Vision",
         "provider": "nvidia",
-        "remote_id": "deepseek-ai/deepseek-v4-flash",
+        "remote_id": "z-ai/glm-5.3-flash",
+        "vision": True,
+    },
+    "nvidia::nvidia/nemotron-3.5-lightning-30b-a3b": {
+        "label": "Nemotron 3.5 Lightning 30B",
+        "provider": "nvidia",
+        "remote_id": "nvidia/nemotron-3.5-lightning-30b-a3b",
         "vision": False,
     },
-    "nvidia::qwen/qwen3-next-80b-a3b-instruct": {
-        "label": "Qwen3 Next 80B A3B",
+    "nvidia::nvidia/nemotron-3-super-120b-a12b": {
+        "label": "Nemotron 3 Super 120B",
         "provider": "nvidia",
-        "remote_id": "qwen/qwen3-next-80b-a3b-instruct",
+        "remote_id": "nvidia/nemotron-3-super-120b-a12b",
         "vision": False,
+    },
+    "nvidia::openai/gpt-oss-20b": {
+        "label": "GPT-OSS 20B",
+        "provider": "nvidia",
+        "remote_id": "openai/gpt-oss-20b",
+        "vision": False,
+    },
+    "nvidia::google/gemma-4-31b-it": {
+        "label": "Gemma 4 31B Vision",
+        "provider": "nvidia",
+        "remote_id": "google/gemma-4-31b-it",
+        "vision": True,
+    },
+    "nvidia::meta/muse-glimmer-30b": {
+        "label": "Muse Glimmer 30B Vision",
+        "provider": "nvidia",
+        "remote_id": "meta/muse-glimmer-30b",
+        "vision": True,
     },
     "cohere::command-a-plus-05-2026": {
         "label": "Command A+",
@@ -222,6 +254,12 @@ MODELS: dict[str, dict[str, object]] = {
         "remote_id": "inclusionai/ling-3.0-flash-vl",
         "vision": True,
     },
+}
+
+MODEL_ALIASES = {
+    "nvidia::openai/gpt-oss-120b": "nvidia::openai/gpt-oss-20b",
+    "nvidia::deepseek-ai/deepseek-v4-flash": "nvidia::deepseek-ai/deepseek-v4.1-flash",
+    "nvidia::qwen/qwen3-next-80b-a3b-instruct": "nvidia::z-ai/glm-5.3",
 }
 
 ALLOWED_ORIGIN = "https://brahmiamine.github.io"
@@ -253,6 +291,10 @@ def upstream_error_message(raw: str, status: int) -> str:
                 return str(err["message"])
             if data.get("message"):
                 return str(data["message"])
+            if data.get("detail"):
+                return str(data["detail"])
+            if data.get("title"):
+                return str(data["title"])
     except Exception:
         pass
     return text
@@ -815,6 +857,7 @@ def stop_model() -> None:
 def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> None:
     global _model_proc, _model_log_handle, _active_model
 
+    model_id = MODEL_ALIASES.get(model_id, model_id)
     if model_id == "local":
         model_id = DEFAULT_MODEL
     if model_id not in MODELS:
@@ -1057,6 +1100,8 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         model_id = str(body.get("model") or DEFAULT_MODEL)
+        model_id = MODEL_ALIASES.get(model_id, model_id)
+        body["model"] = model_id
         if model_id == "local":
             model_id = DEFAULT_MODEL
             body["model"] = model_id

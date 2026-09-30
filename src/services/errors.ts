@@ -43,6 +43,7 @@ export function friendlyError(e: unknown, baseUrl: string, reason: AbortReason =
     if (st === 503) return { title: 'Le modèle n’est pas encore chargé.', hint: 'Le modèle est encore en cours de chargement. Réessayez dans quelques secondes.', http: true };
     if (st === 401 || st === 403) return { title: 'Accès refusé par le fournisseur.', hint: 'Vérifiez la clé du fournisseur côté Termux dans ~/.lueur.env.', http: true };
     if (st === 404) return { title: 'Point d’accès ou modèle introuvable.', hint: 'Vérifiez le modèle sélectionné et la configuration du fournisseur.', http: true };
+    if (st === 410) return { title: 'Ce modèle a été retiré par le fournisseur.', hint: e.message || 'Choisissez un modèle actuellement disponible chez ce fournisseur.', http: true };
     if (st === 429) return { title: 'Quota ou limite de débit atteint.', hint: 'Attendez un peu ou essayez un autre fournisseur/modèle.', http: true };
     if (st === 400) {
       return {
