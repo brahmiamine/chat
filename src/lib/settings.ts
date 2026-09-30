@@ -44,9 +44,15 @@ export const DEFAULT_MODELS: ModelEntry[] = [
   { id: 'cerebras::gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cerebras', providerLabel: PROVIDER_LABELS.cerebras },
   { id: 'huggingface::deepseek-ai/DeepSeek-R1:fastest', label: 'DeepSeek R1', provider: 'huggingface', providerLabel: PROVIDER_LABELS.huggingface },
 
-  { id: 'nvidia::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
-  { id: 'nvidia::deepseek-ai/deepseek-v4-flash', label: 'DeepSeek V4 Flash', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
-  { id: 'nvidia::qwen/qwen3-next-80b-a3b-instruct', label: 'Qwen3 Next 80B A3B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  // NVIDIA hosted free endpoints verified against the current NIM catalog.
+  { id: 'nvidia::deepseek-ai/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash Vision', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::z-ai/glm-5.3', label: 'GLM-5.3', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::z-ai/glm-5.3-flash', label: 'GLM-5.3 Flash Vision', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning 30B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::openai/gpt-oss-20b', label: 'GPT-OSS 20B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::google/gemma-4-31b-it', label: 'Gemma 4 31B Vision', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::meta/muse-glimmer-30b', label: 'Muse Glimmer 30B Vision', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
 
   { id: 'cohere::command-a-plus-05-2026', label: 'Command A+', provider: 'cohere', providerLabel: PROVIDER_LABELS.cohere },
 
@@ -82,13 +88,21 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const KEY = 'lueur.settings';
 
+const MODEL_REPLACEMENTS: Record<string, string> = {
+  'nvidia::openai/gpt-oss-120b': 'nvidia::openai/gpt-oss-20b',
+  'nvidia::deepseek-ai/deepseek-v4-flash': 'nvidia::deepseek-ai/deepseek-v4.1-flash',
+  'nvidia::qwen/qwen3-next-80b-a3b-instruct': 'nvidia::z-ai/glm-5.3',
+};
+
 const LEGACY_DEFAULT_MODELS = new Set([
   'mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M',
   'Qwen2.5-7B-Instruct-GGUF:Q4_K_M',
+  ...Object.keys(MODEL_REPLACEMENTS),
 ]);
 
 function migrateDefaultModel(s: Settings): Settings {
-  const modelId = LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId;
+  const modelId = MODEL_REPLACEMENTS[s.modelId]
+    || (LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId);
   const models: ModelEntry[] = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
     .map((m): ModelEntry => {
