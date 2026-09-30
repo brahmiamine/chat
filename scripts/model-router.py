@@ -12,21 +12,34 @@ llama-server model process loaded at a time.
 """
 from __future__ import annotations
 
+import ast
 import atexit
 import fcntl
+import hashlib
 import http.client
+import ipaddress
 import json
+import math
 import mimetypes
+import operator
 import os
+import queue
+import re
 import shutil
 import signal
+import socket
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
+from array import array
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterator
@@ -42,6 +55,9 @@ THREADS = int(os.environ.get("LUEUR_THREADS", "6"))
 # Les modèles "thinking" génèrent un long raisonnement caché avant la réponse.
 # Désactivé par défaut pour qu'ils répondent tout de suite (LUEUR_THINKING=1 pour le garder).
 THINKING = os.environ.get("LUEUR_THINKING", "0") == "1"
+# --jinja active les templates de chat qui gèrent le function calling
+# (outils de l'agent). LUEUR_JINJA=0 pour un vieux build qui ne le connaît pas.
+JINJA = os.environ.get("LUEUR_JINJA", "1") != "0"
 UI_DIR = Path(os.environ.get("LUEUR_UI_DIR", str(Path.home() / "lueur-ui"))).resolve()
 LLAMA_DIR = Path(os.environ.get("LUEUR_LLAMA_DIR", str(Path.home() / "llama.cpp"))).resolve()
 SNAP_LLAMA_DIR = Path(
@@ -116,6 +132,9 @@ MODELS: dict[str, dict[str, object]] = {
         "label": "Phi-4 Mini 3.8B · Snapdragon NPU",
         "provider": "local",
         "vision": False,
+        # Testé avec llama.cpp --jinja : écrit de faux appels d'outils en texte
+        # (« [web_search : …] » en boucle) au lieu de vrais tool_calls.
+        "tools": False,
         "filename": "microsoft_Phi-4-mini-instruct-Q4_0.gguf",
         "url": "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_0.gguf",
         "ubatch": 1024,
@@ -158,6 +177,7 @@ MODELS: dict[str, dict[str, object]] = {
         "provider": "local",
         "vision": False,
         "thinking": True,
+        "tools": False,
         "filename": "DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf",
         "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf",
         "ubatch": 1024,
@@ -205,6 +225,7 @@ MODELS: dict[str, dict[str, object]] = {
         "provider": "huggingface",
         "remote_id": "deepseek-ai/DeepSeek-R1:fastest",
         "vision": False,
+        "tools": False,
     },
     # Current NVIDIA hosted free endpoints. Retired ids are mapped below so
     # stale browser settings continue to work until the UI refreshes.
@@ -393,9 +414,7 @@ class GenerationJob:
         self.cond = threading.Condition()
         self.conn: http.client.HTTPConnection | None = None
 
-        requested_model = str(body.get("model") or DEFAULT_MODEL)
-        if requested_model == "local":
-            requested_model = DEFAULT_MODEL
+        requested_model = resolve_model_id(str(body.get("model") or DEFAULT_MODEL))
         meta = MODELS.get(requested_model) or {}
         self.model_id = requested_model
         self.provider = str(meta.get("provider") or "local")
@@ -416,6 +435,26 @@ class GenerationJob:
         self.cost_usd: float | None = 0.0 if self.provider == "local" else None
         self.http_status: int | None = None
         self.attachments = 0
+        # Étapes visibles de l'agent (outils, mémoire, résumé), envoyées à l'UI.
+        self.steps: list[dict[str, object]] = []
+        self.steps_version = 0
+        self.has_documents = False
+
+    def add_step(self, step: dict[str, object]) -> int:
+        with self.cond:
+            self.steps.append(step)
+            self.steps_version += 1
+            self.updated_at = time.time()
+            self.cond.notify_all()
+            return len(self.steps) - 1
+
+    def update_step(self, index: int, **fields: object) -> None:
+        with self.cond:
+            if 0 <= index < len(self.steps):
+                self.steps[index].update(fields)
+                self.steps_version += 1
+                self.updated_at = time.time()
+                self.cond.notify_all()
 
     def update_usage(self, payload: dict) -> None:
         with self.cond:
@@ -545,6 +584,7 @@ class GenerationJob:
                 "error": self.error,
                 "error_code": self.error_code,
                 "updated_at": self.updated_at,
+                "steps": [dict(s) for s in self.steps],
                 "metrics": self.metrics_snapshot(),
             }
 
@@ -609,9 +649,11 @@ def set_job_terminal(
 
 
 def run_generation_job(job: GenerationJob, body: dict) -> None:
+    global _last_generation_end
+
+    model_id = resolve_model_id(str(body.get("model") or DEFAULT_MODEL))
     # llama-server uses -np 1; serialize background generations accordingly.
-    with _generation_lock, local_model_use(str(body.get("model") or DEFAULT_MODEL)):
-        conn: http.client.HTTPConnection | None = None
+    with _generation_lock, local_model_use(model_id):
         with job.cond:
             job.upstream_started_at = time.time()
             job.updated_at = job.upstream_started_at
@@ -620,86 +662,48 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
                 set_job_terminal(job, "stopped")
                 return
 
-            upstream = dict(body)
-            upstream.pop("_lueur_job_id", None)
-            upstream.pop("_lueur_cursor", None)
-            upstream["stream"] = True
+            base = {k: v for k, v in body.items() if not k.startswith("_lueur_")}
+            base["model"] = model_id
+            messages = list(base.pop("messages", None) or [])
+            conversation_id = str(body.get("_lueur_conversation_id") or "")
+            use_memory = bool(body.get("_lueur_memory"))
+            agent = bool(body.get("_lueur_agent")) and model_supports_tools(model_id)
 
-            model_id = str(upstream.get("model") or DEFAULT_MODEL)
-            if model_id == "local":
-                model_id = DEFAULT_MODEL
-                upstream["model"] = model_id
+            # Liste d'outils provisoire (pour réserver sa place dans le contexte) ;
+            # document_search n'est ajouté que si la conversation a des documents.
+            tool_names = [
+                name for name, spec in TOOLS.items()
+                if agent and (spec.get("needs") in (None, "documents")
+                              or (use_memory and spec.get("needs") == "memory"))
+            ]
+            tools_tokens = estimate_tokens(json.dumps([TOOLS[n]["schema"] for n in tool_names])) if agent else 0
+
+            if body.get("_lueur_context"):
+                messages = build_context(job, {**body, "model": model_id}, tools_tokens, use_memory)
+            if agent:
+                tool_names = [n for n in tool_names if n != "document_search" or job.has_documents]
+                prompt = agent_system_prompt(tool_names)
+                if messages and messages[0].get("role") == "system":
+                    messages[0] = {"role": "system", "content": f"{messages[0]['content']}\n\n{prompt}"}
+                else:
+                    messages.insert(0, {"role": "system", "content": prompt})
+                run_agent(job, model_id, base, messages, tool_names, conversation_id)
+            else:
+                stream_turn(job, model_id, {**base, "messages": messages, "stream": True})
 
             if job.cancelled:
                 set_job_terminal(job, "stopped")
                 return
+            set_job_terminal(job, "done")
 
-            conn, res = open_completion(model_id, upstream)
-            with job.cond:
-                job.conn = conn
-                job.http_status = res.status
-
-            if res.status >= 400:
-                detail = res.read().decode("utf-8", "replace")
-                message = upstream_error_message(detail, res.status)
-                log(
-                    f"Provider error {job.provider} / {job.resolved_model}: "
-                    f"HTTP {res.status} - {message}"
-                )
-                set_job_terminal(
-                    job,
-                    "error",
-                    message,
-                    res.status,
-                )
-                return
-
-            while not job.cancelled:
-                line = res.readline()
-                if not line:
-                    if job.cancelled:
-                        break
-                    raise RuntimeError("Flux modèle interrompu")
-                text = line.decode("utf-8", "replace").strip()
-                if not text or text.startswith(":") or not text.startswith("data:"):
-                    continue
-
-                data = text[5:].strip()
-                if data == "[DONE]":
-                    set_job_terminal(job, "done")
-                    return
-
-                try:
-                    payload = json.loads(data)
-                except Exception:
-                    continue
-
-                if isinstance(payload, dict):
-                    job.update_usage(payload)
-
-                if payload.get("error"):
-                    err = payload["error"]
-                    if isinstance(err, dict):
-                        raise RuntimeError(str(err.get("message") or err))
-                    raise RuntimeError(str(err))
-
-                choices = payload.get("choices") or [{}]
-                delta = (choices[0].get("delta") or {}) if choices else {}
-                token = delta.get("content")
-                if token:
-                    with job.cond:
-                        if job.first_token_at is None:
-                            job.first_token_at = time.time()
-                        job.content += str(token)
-                        job.updated_at = time.time()
-                        job.cond.notify_all()
-                elif delta.get("reasoning_content"):
-                    # Wake attached clients so they still receive keepalives.
-                    with job.cond:
-                        job.updated_at = time.time()
-                        job.cond.notify_all()
-
-            set_job_terminal(job, "stopped")
+            if use_memory:
+                last_user = next((m for m in reversed(body.get("messages") or [])
+                                  if isinstance(m, dict) and m.get("role") == "user"), None)
+                if last_user:
+                    memory_extractor.submit(content_text(last_user.get("content"))[:3000], job.content, model_id)
+        except UpstreamHTTPError as exc:
+            log(f"Provider error {job.provider} / {job.resolved_model}: HTTP {exc.status} - {exc}")
+            set_job_terminal(job, "error", str(exc), exc.status)
         except Exception as exc:
             if job.cancelled:
                 set_job_terminal(job, "stopped")
@@ -707,13 +711,7 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
                 log(f"Generation {job.id} error: {exc}")
                 set_job_terminal(job, "error", str(exc))
         finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-            with job.cond:
-                job.conn = None
+            _last_generation_end = time.monotonic()
 
 
 def get_or_start_job(job_id: str, body: dict) -> GenerationJob:
@@ -816,9 +814,7 @@ def open_completion(
 
     meta = MODELS[model_id]
     provider = str(meta.get("provider") or "local")
-    upstream = dict(body)
-    upstream.pop("_lueur_job_id", None)
-    upstream.pop("_lueur_cursor", None)
+    upstream = {k: v for k, v in body.items() if not k.startswith("_lueur_")}
     upstream["stream"] = bool(body.get("stream", False))
 
     if provider == "local":
@@ -1118,6 +1114,8 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
                 "-c", str(CTX),
                 "-np", "1",
             ]
+            if JINJA:
+                args.append("--jinja")
             if THREADS > 0:
                 args += ["-t", str(THREADS)]
 
@@ -1199,12 +1197,16 @@ def download_models(target: str) -> int:
         ids = [mid for mid, meta in MODELS.items() if meta.get("provider") == "local"]
     elif target == "default":
         ids = [resolve_model_id(DEFAULT_MODEL)]
+    elif target == "embed":
+        ids = []
     else:
         ids = [resolve_model_id(target)]
+    if EMBED_ENABLED and target in ("all", "default", "embed"):
+        ids.append("embed")
 
     failed = 0
     for model_id in ids:
-        meta = MODELS.get(model_id)
+        meta = EMBED_MODEL if model_id == "embed" else MODELS.get(model_id)
         if not meta or meta.get("provider") != "local":
             log(f"Modèle local inconnu: {model_id}")
             failed += 1
@@ -1216,6 +1218,1518 @@ def download_models(target: str) -> int:
             log(f"❌ {meta['label']}: {exc}")
             failed += 1
     return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
+# Agent : stockage, embeddings, mémoire, contexte, outils, boucle agent.
+#
+# Tout reste dans ce fichier et n'utilise que la bibliothèque standard
+# (numpy est utilisé s'il est installé, sinon Python pur) : start-ai.sh n'a
+# qu'un fichier à mettre à jour et rien à compiler sous Termux.
+# ---------------------------------------------------------------------------
+
+DATA_DIR = Path(os.environ.get("LUEUR_DATA_DIR", str(Path.home() / ".lueur"))).resolve()
+DB_PATH = DATA_DIR / "lueur.db"
+# Contexte supposé pour les modèles cloud (le local utilise CTX).
+CLOUD_CTX = int(os.environ.get("LUEUR_CLOUD_CTX", "32768"))
+AGENT_MAX_STEPS = max(1, int(os.environ.get("LUEUR_AGENT_MAX_STEPS", "6")))
+SEARXNG_URL = os.environ.get("LUEUR_SEARXNG_URL", "").strip().rstrip("/")
+
+EMBED_ENABLED = os.environ.get("LUEUR_EMBED", "1") != "0"
+EMBED_PORT = int(os.environ.get("LUEUR_EMBED_PORT", "8082"))
+EMBED_THREADS = int(os.environ.get("LUEUR_EMBED_THREADS", "2"))
+EMBED_LOG = Path(os.environ.get("LUEUR_EMBED_LOG", str(Path.home() / "llama-embed.log")))
+EMBED_MODEL: dict[str, object] = {
+    "label": "Qwen3 Embedding 0.6B",
+    "provider": "local",
+    "filename": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "url": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+}
+# Qwen3-Embedding attend une instruction côté requête, pas côté documents.
+EMBED_QUERY_PREFIX = (
+    "Instruct: Given a user message, retrieve stored facts or document passages "
+    "that help answer it\nQuery: "
+)
+EMBED_MAX_CHARS = 3000
+
+MEMORY_TOP_K = 5
+# En dessous de ce nombre de souvenirs, tous sont injectés (moins cher
+# qu'une recherche, et « je m'appelle… » est toujours pertinent).
+MEMORY_ALWAYS_ALL = 8
+# Calibré avec Qwen3-Embedding sur des souvenirs en français : pertinent ≈ 0.55-0.62,
+# hors sujet ≈ 0.25, zone grise ≈ 0.40-0.47 (souvent du bruit : exclue).
+SEMANTIC_MIN_SCORE = 0.5
+# Reformulation d'un même fait ≈ 0.88 ; faits différents (Tunis/Paris, chat/chien) ≤ 0.80.
+DUPLICATE_MIN_SCORE = 0.86
+KEYWORD_MIN_SCORE = 0.3
+# Une pièce jointe texte plus longue que ça est indexée (RAG) au lieu d'être
+# recopiée entièrement dans le prompt.
+DOC_MIN_CHARS = 4000
+CHUNK_CHARS = 1200
+CHUNK_OVERLAP = 150
+CHARS_PER_TOKEN = 3.2
+USER_AGENT = "Mozilla/5.0 (Linux; Android 14) Lueur/1.0 (+https://github.com/brahmiamine/chat)"
+
+try:  # accélère la recherche vectorielle si numpy est installé
+    import numpy as _np
+except Exception:  # pragma: no cover - dépend de l'appareil
+    _np = None
+
+_last_generation_end = 0.0
+
+
+def estimate_tokens(content: object) -> int:
+    if isinstance(content, str):
+        return int(len(content) / CHARS_PER_TOKEN) + 1
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    total += int(len(str(part.get("text") or "")) / CHARS_PER_TOKEN) + 1
+                elif part.get("type") == "image_url":
+                    total += 800
+        return total
+    return 0
+
+
+def content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n\n".join(
+            str(p.get("text") or "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
+def strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?(</think>|$)", "", text or "", flags=re.S).strip()
+
+
+def disable_thinking_if_needed(model_id: str, body: dict) -> None:
+    if (
+        provider_name(model_id) == "local"
+        and not THINKING
+        and MODELS.get(model_id, {}).get("thinking")
+        and "chat_template_kwargs" not in body
+    ):
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+
+
+def model_supports_tools(model_id: str) -> bool:
+    return bool(MODELS.get(model_id, {}).get("tools", True))
+
+
+# ---- Stockage SQLite -------------------------------------------------------
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    source TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    embedding BLOB
+);
+CREATE TABLE IF NOT EXISTS summaries (
+    conversation_id TEXT PRIMARY KEY,
+    covered INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT,
+    name TEXT,
+    chars INTEGER,
+    created_at REAL
+);
+CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    embedding BLOB
+);
+CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS documents_conv ON documents(conversation_id);
+"""
+
+
+class Store:
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._db = sqlite3.connect(str(path), check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        with self._lock:
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.executescript(_SCHEMA)
+            self._db.commit()
+
+    def rows(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._db.execute(sql, args).fetchall()
+
+    def run(self, sql: str, args: tuple = ()) -> int:
+        with self._lock, self._db:
+            return int(self._db.execute(sql, args).lastrowid or 0)
+
+    def run_many(self, sql: str, seq: list[tuple]) -> None:
+        with self._lock, self._db:
+            self._db.executemany(sql, seq)
+
+
+_store: Store | None = None
+_store_lock = threading.Lock()
+
+
+def store() -> Store:
+    global _store
+    with _store_lock:
+        if _store is None:
+            _store = Store(DB_PATH)
+        return _store
+
+
+def pack_vector(vec: list[float]) -> bytes:
+    return array("f", vec).tobytes()
+
+
+def unpack_vector(blob: bytes | None) -> array | None:
+    if not blob:
+        return None
+    vec = array("f")
+    vec.frombytes(blob)
+    return vec
+
+
+def _normalize(vec: list[float]) -> list[float]:
+    norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return [x / norm for x in vec]
+
+
+# ---- Embeddings (second llama-server, CPU) ---------------------------------
+
+class Embedder:
+    """Petit llama-server `--embedding` sur CPU, démarré en arrière-plan.
+
+    Tant qu'il n'est pas prêt (téléchargement, chargement), embed() renvoie
+    None et la recherche se rabat sur les mots-clés : rien n'attend jamais.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._log = None
+        self._failed_at = 0.0
+        self.state = "idle" if EMBED_ENABLED else "off"
+
+    def _url(self, path: str) -> str:
+        return f"http://{MODEL_HOST}:{EMBED_PORT}{path}"
+
+    def _healthy(self) -> bool:
+        try:
+            with urllib.request.urlopen(self._url("/health"), timeout=2) as res:
+                return res.status == 200 and b'"ok"' in res.read(256)
+        except Exception:
+            return False
+
+    def start_async(self) -> None:
+        if not EMBED_ENABLED:
+            return
+        with self._lock:
+            if self.state in ("downloading", "starting"):
+                return
+            if self.state == "ready" and (self._proc is None or self._proc.poll() is None):
+                return
+            if self.state == "error" and time.monotonic() - self._failed_at < 300:
+                return
+            self.state = "starting"
+        threading.Thread(target=self._start, name="lueur-embed", daemon=True).start()
+
+    def _binary(self) -> tuple[Path, dict[str, str]]:
+        env = os.environ.copy()
+        custom = os.environ.get("LUEUR_EMBED_BIN", "").strip()
+        if custom:
+            return Path(custom), env
+        # Un build CPU générique évite de toucher au NPU utilisé par le chat.
+        for candidate in (LLAMA_DIR / "build" / "bin" / "llama-server", LLAMA_DIR / "llama-server"):
+            if candidate.exists():
+                return candidate, env
+        runtime_lib = str(SNAP_LLAMA_DIR / "lib")
+        env["LD_LIBRARY_PATH"] = runtime_lib
+        env["ADSP_LIBRARY_PATH"] = runtime_lib
+        return SNAP_LLAMA_BIN, env
+
+    def _start(self) -> None:
+        try:
+            if self._healthy():
+                # Serveur d'un router précédent encore vivant : on le réutilise.
+                self.state = "ready"
+                log("Embeddings: serveur existant réutilisé")
+                self._backfill()
+                return
+            self.state = "downloading"
+            model_path = ensure_model_file(EMBED_MODEL)
+            self.state = "starting"
+            binary, env = self._binary()
+            args = [
+                str(binary),
+                "-m", str(model_path),
+                "--embedding",
+                "--pooling", "last",
+                "-ngl", "0",
+                "-c", "2048",
+                "-b", "2048",
+                "-ub", "2048",
+                "-np", "1",
+                "-t", str(EMBED_THREADS),
+                "--host", MODEL_HOST,
+                "--port", str(EMBED_PORT),
+            ]
+            EMBED_LOG.parent.mkdir(parents=True, exist_ok=True)
+            self._log = EMBED_LOG.open("w", encoding="utf-8")
+            log(f"Embeddings: démarrage de {EMBED_MODEL['label']} (CPU, port {EMBED_PORT})")
+            self._proc = subprocess.Popen(
+                args, env=env, stdout=self._log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            started = time.monotonic()
+            while time.monotonic() - started < 180:
+                if self._proc.poll() is not None:
+                    raise RuntimeError(f"llama-server embeddings arrêté (code {self._proc.returncode}), voir {EMBED_LOG}")
+                if self._healthy():
+                    self.state = "ready"
+                    log("Embeddings prêts")
+                    self._backfill()
+                    return
+                time.sleep(1)
+            raise TimeoutError("Démarrage des embeddings > 180 s")
+        except Exception as exc:
+            log(f"Embeddings indisponibles ({exc}); recherche par mots-clés en attendant")
+            self._failed_at = time.monotonic()
+            self.state = "error"
+            self.stop()
+            self.state = "error"
+
+    def embed(self, texts: list[str], query: bool = False) -> list[list[float]] | None:
+        if not texts:
+            return []
+        if self.state != "ready":
+            self.start_async()
+            return None
+        if self._proc is not None and self._proc.poll() is not None:
+            self.state = "idle"
+            self.start_async()
+            return None
+        inputs = [((EMBED_QUERY_PREFIX if query else "") + t)[:EMBED_MAX_CHARS] for t in texts]
+        try:
+            req = urllib.request.Request(
+                self._url("/v1/embeddings"),
+                data=json.dumps({"input": inputs}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as res:
+                data = json.loads(res.read().decode("utf-8"))
+            items = sorted(data.get("data") or [], key=lambda d: d.get("index", 0))
+            vectors = [_normalize([float(x) for x in item["embedding"]]) for item in items]
+            return vectors if len(vectors) == len(texts) else None
+        except Exception as exc:
+            log(f"Embeddings: erreur {exc}")
+            return None
+
+    def _backfill(self) -> None:
+        """Calcule les vecteurs manquants (souvenirs/documents ajoutés avant)."""
+        def work() -> None:
+            db = store()
+            for table in ("memories", "chunks"):
+                while self.state == "ready":
+                    rows = db.rows(f"SELECT id, text FROM {table} WHERE embedding IS NULL LIMIT 16")
+                    if not rows:
+                        break
+                    vectors = self.embed([r["text"] for r in rows])
+                    if not vectors:
+                        return
+                    db.run_many(
+                        f"UPDATE {table} SET embedding = ? WHERE id = ?",
+                        [(pack_vector(v), r["id"]) for v, r in zip(vectors, rows)],
+                    )
+        threading.Thread(target=work, name="lueur-embed-backfill", daemon=True).start()
+
+    def stop(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+        if self._log:
+            try:
+                self._log.close()
+            except Exception:
+                pass
+            self._log = None
+        if self.state == "ready":
+            self.state = "idle"
+
+
+embedder = Embedder()
+
+
+# ---- Recherche hybride (vecteurs + mots-clés) -------------------------------
+
+_STOPWORDS = set(
+    "les des une un le la de du et ou en dans sur pour par avec sans est sont que qui quoi "
+    "comment pourquoi quel quelle quels quelles vous nous ils elles mon ton son mes tes ses "
+    "notre votre leur leurs cette ces cet aux pas plus tres tout tous faire fait peux peut "
+    "the and for with that this from what how why are was were you your have has not but".split()
+)
+
+
+def _keywords(text: str) -> set[str]:
+    plain = unicodedata.normalize("NFD", (text or "").lower())
+    plain = "".join(c for c in plain if not unicodedata.combining(c))
+    return {w for w in re.findall(r"[a-z0-9]{3,}", plain) if w not in _STOPWORDS}
+
+
+def _dot(a: array, b: array) -> float:
+    if len(a) != len(b):
+        return -1.0
+    return float(sum(map(operator.mul, a, b)))
+
+
+def rank(query: str, items: list[tuple[object, str, bytes | None]], k: int,
+         min_semantic: float = SEMANTIC_MIN_SCORE) -> list[tuple[float, object, str]]:
+    """Classe (id, texte, vecteur) par pertinence pour `query`."""
+    if not items:
+        return []
+    qvec_list = embedder.embed([query], query=True)
+    qvec = array("f", qvec_list[0]) if qvec_list else None
+    qwords = _keywords(query)
+    scored: list[tuple[float, object, str]] = []
+
+    vectors = [unpack_vector(blob) for _, _, blob in items]
+    semantic: list[float | None] = [None] * len(items)
+    if qvec is not None:
+        if _np is not None:
+            idx = [i for i, v in enumerate(vectors) if v is not None and len(v) == len(qvec)]
+            if idx:
+                mat = _np.array([vectors[i] for i in idx], dtype=_np.float32)
+                sims = mat @ _np.array(qvec, dtype=_np.float32)
+                for i, s in zip(idx, sims.tolist()):
+                    semantic[i] = s
+        else:
+            for i, v in enumerate(vectors):
+                if v is not None:
+                    semantic[i] = _dot(v, qvec)
+
+    for i, (item_id, text, _) in enumerate(items):
+        if semantic[i] is not None and semantic[i] >= 0:
+            if semantic[i] >= min_semantic:
+                scored.append((semantic[i], item_id, text))
+            continue
+        # Pas de vecteur (embeddings pas encore prêts) : mots-clés.
+        if qwords:
+            words = _keywords(text)
+            overlap = len(qwords & words)
+            if overlap:
+                score = overlap / len(qwords)
+                if score >= KEYWORD_MIN_SCORE or overlap >= 2:
+                    scored.append((min(0.99, score) * 0.8, item_id, text))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:k]
+
+
+# ---- Mémoire long terme -----------------------------------------------------
+
+def memory_count() -> int:
+    return int(store().rows("SELECT COUNT(*) AS n FROM memories")[0]["n"])
+
+
+def memory_list() -> list[dict[str, object]]:
+    return [
+        {"id": r["id"], "text": r["text"], "source": r["source"],
+         "created_at": r["created_at"], "updated_at": r["updated_at"]}
+        for r in store().rows("SELECT * FROM memories ORDER BY updated_at DESC")
+    ]
+
+
+def memory_search(query: str, k: int = MEMORY_TOP_K, min_semantic: float = SEMANTIC_MIN_SCORE) -> list[dict[str, object]]:
+    rows = store().rows("SELECT id, text, embedding FROM memories")
+    if len(rows) <= MEMORY_ALWAYS_ALL and min_semantic >= SEMANTIC_MIN_SCORE:
+        return [{"id": r["id"], "text": r["text"]} for r in rows]
+    ranked = rank(query, [(r["id"], r["text"], r["embedding"]) for r in rows], k, min_semantic)
+    return [{"id": item_id, "text": text, "score": round(score, 3)} for score, item_id, text in ranked]
+
+
+def memory_add(text: str, source: str = "user") -> dict[str, object]:
+    text = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(text) < 3:
+        raise ValueError("Souvenir vide")
+    text = text[:500]
+    db = store()
+    now = time.time()
+    norm = " ".join(sorted(_keywords(text)))
+    rows = db.rows("SELECT id, text, embedding FROM memories")
+    for r in rows:
+        if " ".join(sorted(_keywords(r["text"]))) == norm:
+            db.run("UPDATE memories SET updated_at = ? WHERE id = ?", (now, r["id"]))
+            return {"id": r["id"], "text": r["text"], "status": "exists"}
+
+    vec_list = embedder.embed([text])
+    blob = pack_vector(vec_list[0]) if vec_list else None
+    if vec_list:
+        vec = array("f", vec_list[0])
+        for r in rows:
+            other = unpack_vector(r["embedding"])
+            if other is not None and _dot(vec, other) >= DUPLICATE_MIN_SCORE:
+                # Même information reformulée : la plus récente l'emporte.
+                db.run(
+                    "UPDATE memories SET text = ?, embedding = ?, updated_at = ?, source = ? WHERE id = ?",
+                    (text, blob, now, source, r["id"]),
+                )
+                return {"id": r["id"], "text": text, "status": "updated"}
+
+    mid = db.run(
+        "INSERT INTO memories (text, source, created_at, updated_at, embedding) VALUES (?, ?, ?, ?, ?)",
+        (text, source, now, now, blob),
+    )
+    log(f"Souvenir ajouté ({source}): {text[:80]}")
+    return {"id": mid, "text": text, "status": "added"}
+
+
+def memory_delete(memory_id: int) -> bool:
+    db = store()
+    exists = db.rows("SELECT id FROM memories WHERE id = ?", (memory_id,))
+    db.run("DELETE FROM memories WHERE id = ?", (memory_id,))
+    return bool(exists)
+
+
+def memory_clear() -> None:
+    store().run("DELETE FROM memories")
+
+
+def complete(model_id: str, messages: list[dict], max_tokens: int = 400, temperature: float = 0.2) -> str:
+    """Appel non streamé, utilisé pour les résumés et l'extraction de souvenirs."""
+    body: dict[str, object] = {
+        "model": model_id,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": False,
+    }
+    disable_thinking_if_needed(model_id, body)
+    if provider_name(model_id) == "local":
+        body["repeat_penalty"] = 1.15  # les petits modèles bouclent sur un texte répétitif
+    conn, res = open_completion(model_id, body)
+    try:
+        raw = res.read().decode("utf-8", "replace")
+        if res.status >= 400:
+            raise RuntimeError(upstream_error_message(raw, res.status))
+        data = json.loads(raw)
+        message = ((data.get("choices") or [{}])[0].get("message") or {})
+        return strip_think(str(message.get("content") or ""))
+    finally:
+        conn.close()
+
+
+_FIRST_PERSON_RE = re.compile(
+    r"(\b(je|j'|j’|mon|ma|mes|moi|nous|notre|nos|i|i'm|my|mine)\b|m'appelle|m’appelle|j'ai|j’ai|j'aime|j’aime)",
+    re.I,
+)
+
+_EXTRACT_PROMPT = (
+    "Tu analyses un échange entre un utilisateur et un assistant. Extrais UNIQUEMENT les "
+    "informations durables sur l'utilisateur, utiles dans de futures conversations : identité, "
+    "prénom, préférences, projets, matériel, objectifs, décisions. Garde les noms propres exacts "
+    "(prénom, nom d'application, modèle d'appareil). Ignore les questions ponctuelles, les "
+    "connaissances générales et le contenu de la réponse de l'assistant. Écris chaque information "
+    "comme une phrase courte à la troisième personne (ex. « L'utilisateur utilise un Honor Magic7 Pro »). "
+    "N'invente rien et ne répète pas les souvenirs déjà connus. Réponds uniquement en JSON : "
+    '{"memories": ["..."]} avec au plus 3 éléments, ou {"memories": []} si rien n\'est à retenir.'
+)
+
+
+def parse_json_object(text: str) -> dict:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        data = json.loads(text[start:end + 1])
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+class MemoryExtractor:
+    """Extrait des souvenirs après une réponse, quand le modèle est libre."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue(maxsize=20)
+        self._thread: threading.Thread | None = None
+
+    def submit(self, user_text: str, answer: str, model_id: str) -> None:
+        user_text = (user_text or "").strip()
+        if len(user_text) < 12 or not _FIRST_PERSON_RE.search(user_text):
+            return  # rien de personnel : pas d'appel LLM inutile
+        try:
+            self._queue.put_nowait((user_text, answer, model_id))
+        except queue.Full:
+            return
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._run, name="lueur-memory", daemon=True)
+            self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                user_text, answer, model_id = self._queue.get(timeout=60)
+            except queue.Empty:
+                return
+            # Laisse passer les messages de l'utilisateur en priorité.
+            while _generation_lock.locked() or time.monotonic() - _last_generation_end < 8:
+                time.sleep(2)
+            try:
+                with _generation_lock, local_model_use(model_id):
+                    known = memory_search(user_text, k=5)
+                    known_text = "\n".join(f"- {m['text']}" for m in known) or "(aucun)"
+                    raw = complete(model_id, [
+                        {"role": "system", "content": _EXTRACT_PROMPT},
+                        {"role": "user", "content": (
+                            f"Souvenirs déjà connus :\n{known_text}\n\n"
+                            f"Message de l'utilisateur :\n{user_text[:2000]}\n\n"
+                            f"Réponse de l'assistant (contexte seulement) :\n{strip_think(answer)[:800]}"
+                        )},
+                    ], max_tokens=250)
+                facts = parse_json_object(raw).get("memories") or []
+                for fact in facts[:3]:
+                    if isinstance(fact, str) and 5 <= len(fact.strip()) <= 300:
+                        memory_add(fact, source="auto")
+            except Exception as exc:
+                log(f"Extraction de souvenirs impossible: {exc}")
+
+
+memory_extractor = MemoryExtractor()
+
+
+# ---- Documents (RAG) --------------------------------------------------------
+
+_DOC_HEADER_RE = re.compile(r"^(?:PDF|Fichier) « (.+?) »")
+
+
+def chunk_text(text: str) -> list[str]:
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        while len(para) > CHUNK_CHARS:
+            head, para = para[:CHUNK_CHARS], para[CHUNK_CHARS - CHUNK_OVERLAP:]
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(head)
+        if len(current) + len(para) + 2 > CHUNK_CHARS and current:
+            chunks.append(current)
+            current = current[-CHUNK_OVERLAP:] + "\n\n" + para
+        else:
+            current = f"{current}\n\n{para}" if current else para
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def index_document(conversation_id: str, name: str, text: str) -> str:
+    doc_id = hashlib.sha1(f"{conversation_id}\0{text}".encode("utf-8")).hexdigest()
+    db = store()
+    if db.rows("SELECT id FROM documents WHERE id = ?", (doc_id,)):
+        return doc_id
+    chunks = chunk_text(text)
+    db.run(
+        "INSERT INTO documents (id, conversation_id, name, chars, created_at) VALUES (?, ?, ?, ?, ?)",
+        (doc_id, conversation_id, name, len(text), time.time()),
+    )
+    # Vecteurs calculés en arrière-plan : l'indexation ne bloque jamais la réponse.
+    db.run_many(
+        "INSERT INTO chunks (document_id, idx, text, embedding) VALUES (?, ?, ?, NULL)",
+        [(doc_id, i, c) for i, c in enumerate(chunks)],
+    )
+    log(f"Document indexé: {name} ({len(chunks)} extraits)")
+    if embedder.state == "ready":
+        embedder._backfill()
+    else:
+        embedder.start_async()
+    return doc_id
+
+
+def conversation_documents(conversation_id: str) -> list[sqlite3.Row]:
+    if not conversation_id:
+        return []
+    return store().rows(
+        "SELECT id, name, chars FROM documents WHERE conversation_id = ?", (conversation_id,)
+    )
+
+
+def search_documents(query: str, doc_ids: list[str], k: int = 4) -> list[dict[str, object]]:
+    if not doc_ids:
+        return []
+    marks = ",".join("?" for _ in doc_ids)
+    rows = store().rows(
+        f"SELECT c.id, c.text, c.embedding, d.name FROM chunks c "
+        f"JOIN documents d ON d.id = c.document_id WHERE c.document_id IN ({marks})",
+        tuple(doc_ids),
+    )
+    names = {r["id"]: r["name"] for r in rows}
+    ranked = rank(query, [(r["id"], r["text"], r["embedding"]) for r in rows], k, min_semantic=0.2)
+    if not ranked and rows:
+        # Aucune correspondance : le début du document reste le meilleur indice.
+        ranked = [(0.0, r["id"], r["text"]) for r in rows[:2]]
+    return [{"name": names.get(item_id, ""), "text": text, "score": round(score, 3)} for score, item_id, text in ranked]
+
+
+# ---- Outils -----------------------------------------------------------------
+
+class _BlockedUrl(Exception):
+    pass
+
+
+def _check_public_url(url: str) -> None:
+    """Refuse les adresses internes : l'agent ne doit pas sonder le téléphone
+    (router, llama-server, API ngrok 4040) ni le réseau local."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise _BlockedUrl("Seules les URL http(s) publiques sont autorisées")
+    try:
+        infos = socket.getaddrinfo(parts.hostname, parts.port or (443 if parts.scheme == "https" else 80))
+    except socket.gaierror as exc:
+        raise _BlockedUrl(f"Nom de domaine introuvable: {parts.hostname}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise _BlockedUrl(f"Adresse non publique refusée: {parts.hostname}")
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_safe_opener = urllib.request.build_opener(_SafeRedirect())
+
+
+def http_fetch(url: str, data: bytes | None = None, max_bytes: int = 3_000_000,
+               timeout: int = 20) -> tuple[int, str, bytes, str]:
+    _check_public_url(url)
+    req = urllib.request.Request(url, data=data, headers={
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    })
+    try:
+        with _safe_opener.open(req, timeout=timeout) as res:
+            return res.status, res.headers.get("Content-Type", ""), res.read(max_bytes), res.geturl()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.headers.get("Content-Type", ""), exc.read(max_bytes), url
+
+
+def _decode(raw: bytes, content_type: str) -> str:
+    match = re.search(r"charset=([\w-]+)", content_type or "", re.I)
+    for enc in ([match.group(1)] if match else []) + ["utf-8", "latin-1"]:
+        try:
+            return raw.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+class _TextExtractor(HTMLParser):
+    SKIP = {"script", "style", "noscript", "svg", "nav", "footer", "form", "iframe", "template", "aside"}
+    BLOCK = {"p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "section",
+             "article", "pre", "blockquote", "table", "header", "main"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.title = ""
+        self._skip = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag == "title":
+            self._in_title = True
+        if tag in self.BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self._skip:
+            self._skip -= 1
+        elif tag == "title":
+            self._in_title = False
+        if tag in self.BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        elif not self._skip:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        raw = "".join(self.parts)
+        lines = [re.sub(r"[ \t ]+", " ", line).strip() for line in raw.splitlines()]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def html_to_text(html: str) -> tuple[str, str]:
+    parser = _TextExtractor()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        pass
+    return parser.title.strip(), parser.text()
+
+
+class _DuckDuckGoParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._field: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        cls = dict(attrs).get("class") or ""
+        if tag == "a" and "result__a" in cls.split():
+            href = dict(attrs).get("href") or ""
+            parsed = urllib.parse.urlsplit(href)
+            target = urllib.parse.parse_qs(parsed.query).get("uddg", [href])[0]
+            if target.startswith("//"):
+                target = "https:" + target
+            self.results.append({"title": "", "url": target, "snippet": ""})
+            self._field = "title"
+        elif "result__snippet" in cls.split() and self.results:
+            self._field = "snippet"
+
+    def handle_endtag(self, tag):
+        if tag in ("a", "div", "td"):
+            self._field = None
+
+    def handle_data(self, data):
+        if self._field and self.results:
+            self.results[-1][self._field] += data
+
+
+def _search_searxng(query: str, n: int) -> list[dict[str, str]]:
+    url = f"{SEARXNG_URL}/search?" + urllib.parse.urlencode({"q": query, "format": "json"})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    # Instance choisie par l'utilisateur (souvent dans le réseau local) : pas
+    # de filtre d'adresse ici.
+    with urllib.request.urlopen(req, timeout=20) as res:
+        data = json.loads(res.read().decode("utf-8"))
+    return [
+        {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
+        for r in (data.get("results") or [])[:n]
+    ]
+
+
+def _search_duckduckgo(query: str, n: int) -> list[dict[str, str]]:
+    status, ctype, raw, _ = http_fetch(
+        "https://html.duckduckgo.com/html/",
+        data=urllib.parse.urlencode({"q": query}).encode("utf-8"),
+    )
+    html = _decode(raw, ctype)
+    if status != 200 or "anomaly" in html[:20000]:
+        raise RuntimeError("DuckDuckGo a refusé la requête (anti-robot)")
+    parser = _DuckDuckGoParser()
+    parser.feed(html)
+    results = [r for r in parser.results if r["url"].startswith("http")]
+    for r in results:
+        r["title"] = r["title"].strip()
+        r["snippet"] = re.sub(r"\s+", " ", r["snippet"]).strip()
+    return results[:n]
+
+
+def _search_wikipedia(query: str, n: int) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for lang in ("fr", "en"):
+        url = f"https://{lang}.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
+            "action": "query", "list": "search", "srsearch": query,
+            "format": "json", "srlimit": n, "utf8": 1,
+        })
+        status, ctype, raw, _ = http_fetch(url)
+        if status != 200:
+            continue
+        for r in json.loads(_decode(raw, ctype)).get("query", {}).get("search", []):
+            title = r.get("title", "")
+            out.append({
+                "title": f"{title} (Wikipedia {lang})",
+                "url": f"https://{lang}.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_")),
+                "snippet": html_to_text(r.get("snippet", ""))[1],
+            })
+        if out:
+            break
+    return out[:n]
+
+
+def tool_web_search(args: dict, ctx: dict) -> str:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return "Erreur: requête vide."
+    n = max(1, min(8, int(_number(args.get("max_results")) or 5)))
+    backends = ([("SearXNG", _search_searxng)] if SEARXNG_URL else []) + [
+        ("DuckDuckGo", _search_duckduckgo),
+        ("Wikipedia", _search_wikipedia),
+    ]
+    errors = []
+    for name, fn in backends:
+        try:
+            results = fn(query, n)
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            continue
+        if results:
+            lines = [f"Résultats ({name}) pour « {query} » :"]
+            for i, r in enumerate(results, 1):
+                lines.append(f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet'][:300]}")
+            return "\n".join(lines)
+        errors.append(f"{name}: aucun résultat")
+    return "Aucun résultat. " + " ; ".join(errors)
+
+
+def tool_fetch_url(args: dict, ctx: dict) -> str:
+    url = str(args.get("url") or "").strip()
+    try:
+        status, ctype, raw, final_url = http_fetch(url)
+    except _BlockedUrl as exc:
+        return f"Erreur: {exc}"
+    except Exception as exc:
+        return f"Erreur: page inaccessible ({exc})"
+    if status >= 400:
+        return f"Erreur: HTTP {status} pour {url}"
+    text = _decode(raw, ctype)
+    title = ""
+    if "html" in ctype.lower() or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+        title, text = html_to_text(text)
+    elif "pdf" in ctype.lower():
+        return "Erreur: les PDF distants ne sont pas pris en charge ; demande à l'utilisateur de le joindre."
+    limit = int(ctx.get("result_chars") or 4000)
+    if len(text) > limit:
+        text = text[:limit] + "\n[… page tronquée …]"
+    return f"Titre: {title or '(sans titre)'}\nURL: {final_url}\n\n{text}"
+
+
+def tool_memory_search(args: dict, ctx: dict) -> str:
+    found = memory_search(str(args.get("query") or ""), k=8, min_semantic=0.35)
+    if not found:
+        return "Aucun souvenir correspondant."
+    return "\n".join(f"- {m['text']}" for m in found)
+
+
+def tool_memory_save(args: dict, ctx: dict) -> str:
+    try:
+        result = memory_add(str(args.get("text") or ""), source="agent")
+    except ValueError as exc:
+        return f"Erreur: {exc}"
+    return {"added": "Souvenir enregistré.", "updated": "Souvenir mis à jour.",
+            "exists": "Ce souvenir existait déjà."}[str(result["status"])]
+
+
+def tool_document_search(args: dict, ctx: dict) -> str:
+    docs = conversation_documents(str(ctx.get("conversation_id") or ""))
+    found = search_documents(str(args.get("query") or ""), [d["id"] for d in docs], k=4)
+    if not found:
+        return "Aucun document indexé dans cette conversation."
+    return "\n\n".join(f"[« {f['name']} »]\n{f['text']}" for f in found)
+
+
+_MATH_FUNCS: dict[str, Callable] = {
+    name: getattr(math, name) for name in (
+        "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log10", "log2",
+        "exp", "floor", "ceil", "fabs", "hypot", "radians", "degrees",
+    )
+}
+_MATH_FUNCS.update({"abs": abs, "round": round, "min": min, "max": max})
+_MATH_CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau}
+
+
+def _safe_eval(node: ast.AST) -> float:
+    if isinstance(node, ast.Expression):
+        return _safe_eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in _MATH_CONSTS:
+        return _MATH_CONSTS[node.id]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _safe_eval(node.operand)
+        return value if isinstance(node.op, ast.UAdd) else -value
+    if isinstance(node, ast.BinOp):
+        left, right = _safe_eval(node.left), _safe_eval(node.right)
+        ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+               ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod}
+        if type(node.op) in ops:
+            return ops[type(node.op)](left, right)
+        if isinstance(node.op, ast.Pow):
+            if abs(right) > 1000 or abs(left) > 1e100:
+                raise ValueError("Puissance trop grande")
+            return left ** right
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in _MATH_FUNCS and not node.keywords and len(node.args) <= 4):
+        return _MATH_FUNCS[node.func.id](*[_safe_eval(a) for a in node.args])
+    raise ValueError("Expression non autorisée")
+
+
+def tool_calculator(args: dict, ctx: dict) -> str:
+    expr = str(args.get("expression") or "").strip()
+    expr = expr.replace("×", "*").replace("÷", "/").replace("^", "**").replace(",", ".")
+    if len(expr) > 300:
+        return "Erreur: expression trop longue."
+    try:
+        value = _safe_eval(ast.parse(expr, mode="eval"))
+    except ZeroDivisionError:
+        return "Erreur: division par zéro."
+    except Exception as exc:
+        return f"Erreur: {exc}"
+    if isinstance(value, float):
+        value = float(f"{value:.12g}")  # 399.50000000000006 → 399.5
+        if value.is_integer() and abs(value) < 1e15:
+            value = int(value)
+    return f"{expr} = {value}"
+
+
+_WEEKDAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+_MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+           "septembre", "octobre", "novembre", "décembre"]
+
+
+def now_text() -> str:
+    t = time.localtime()
+    return (f"{_WEEKDAYS[t.tm_wday]} {t.tm_mday} {_MONTHS[t.tm_mon - 1]} {t.tm_year}, "
+            f"{t.tm_hour:02d}:{t.tm_min:02d} ({time.strftime('%Z')})")
+
+
+def tool_current_datetime(args: dict, ctx: dict) -> str:
+    return f"Nous sommes le {now_text()}."
+
+
+def _schema(name: str, description: str, props: dict | None = None, required: list[str] | None = None) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {"type": "object", "properties": props or {}, "required": required or []},
+        },
+    }
+
+
+TOOLS: dict[str, dict[str, object]] = {
+    "web_search": {
+        "fn": tool_web_search, "label": "Recherche web", "arg": "query",
+        "schema": _schema(
+            "web_search",
+            "Search the web for recent or factual information. Returns titles, URLs and snippets.",
+            {"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"],
+        ),
+    },
+    "fetch_url": {
+        "fn": tool_fetch_url, "label": "Lecture de page", "arg": "url",
+        "schema": _schema(
+            "fetch_url", "Download a web page and return its readable text.",
+            {"url": {"type": "string"}}, ["url"],
+        ),
+    },
+    "memory_search": {
+        "fn": tool_memory_search, "label": "Recherche en mémoire", "arg": "query", "needs": "memory",
+        "schema": _schema(
+            "memory_search", "Search long-term memories about the user.",
+            {"query": {"type": "string"}}, ["query"],
+        ),
+    },
+    "memory_save": {
+        "fn": tool_memory_save, "label": "Mémorisation", "arg": "text", "needs": "memory",
+        "schema": _schema(
+            "memory_save",
+            "Save a durable fact about the user (preference, project, personal detail) for future conversations.",
+            {"text": {"type": "string"}}, ["text"],
+        ),
+    },
+    "document_search": {
+        "fn": tool_document_search, "label": "Recherche dans les documents", "arg": "query", "needs": "documents",
+        "schema": _schema(
+            "document_search", "Search passages inside the documents the user attached to this conversation.",
+            {"query": {"type": "string"}}, ["query"],
+        ),
+    },
+    "calculator": {
+        "fn": tool_calculator, "label": "Calcul", "arg": "expression",
+        "schema": _schema(
+            "calculator", "Evaluate a math expression, e.g. 0.15*80 or sqrt(2)*3.",
+            {"expression": {"type": "string"}}, ["expression"],
+        ),
+    },
+    "current_datetime": {
+        "fn": tool_current_datetime, "label": "Date et heure", "arg": None,
+        "schema": _schema("current_datetime", "Current local date and time."),
+    },
+}
+
+
+def tool_step_detail(name: str, args: dict) -> str:
+    key = (TOOLS.get(name) or {}).get("arg")
+    return str(args.get(key) or "")[:200] if key else ""
+
+
+# ---- Gestionnaire de contexte -----------------------------------------------
+
+_SUMMARY_PROMPT = (
+    "Résume les messages suivants d'une conversation. Conserve les faits précis : noms, "
+    "chiffres, choix, préférences, décisions, questions en suspens. Puces courtes, en français, "
+    "sans préambule, 120 mots maximum."
+)
+_CONDENSE_PROMPT = (
+    "Fusionne ces résumés successifs d'une même conversation en un seul, dans l'ordre, sans "
+    "perdre les faits précis (noms, chiffres, choix). Puces courtes, en français, 180 mots maximum."
+)
+
+
+def _unique_lines(text: str) -> str:
+    seen: set[frozenset[str]] = set()
+    out = []
+    for line in text.splitlines():
+        key = frozenset(_keywords(line))
+        if line.strip() and key and key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def model_context(model_id: str) -> int:
+    return CTX if provider_name(model_id) == "local" else CLOUD_CTX
+
+
+def _clip(content: object, max_tokens: int) -> object:
+    max_chars = max(200, int(max_tokens * CHARS_PER_TOKEN))
+    marker = "\n\n[… contenu tronqué pour le contexte …]"
+    if isinstance(content, str):
+        return content if len(content) <= max_chars else content[:max_chars] + marker
+    if isinstance(content, list):
+        out, left = [], max_chars
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = str(part.get("text") or "")
+                if left <= 0:
+                    continue
+                if len(text) > left:
+                    text = text[:left] + marker
+                left -= len(text)
+                out.append({"type": "text", "text": text})
+            else:
+                out.append(part)
+        return out
+    return content
+
+
+def _flatten(content: object) -> object:
+    """Contenu uniquement textuel → chaîne (certains fournisseurs refusent les listes)."""
+    if isinstance(content, list) and all(isinstance(p, dict) and p.get("type") == "text" for p in content):
+        return "\n\n".join(str(p.get("text") or "") for p in content if p.get("text"))
+    return content
+
+
+def conversation_summary(job: "GenerationJob", conversation_id: str, dropped: list[dict], max_tokens: int) -> str:
+    db = store()
+    row = db.rows("SELECT covered, summary FROM summaries WHERE conversation_id = ?", (conversation_id,))
+    covered, summary = (int(row[0]["covered"]), str(row[0]["summary"])) if row else (0, "")
+    if covered == len(dropped):
+        return summary
+    if covered > len(dropped):
+        covered, summary = 0, ""  # historique raccourci (régénération) : on repart de zéro
+
+    step = job.add_step({"type": "context", "label": f"Résumé de {len(dropped)} anciens messages", "status": "running"})
+    # Par lots, pour que le résumé lui-même tienne dans le contexte du modèle.
+    batch_chars = max(2000, int((model_context(job.model_id) - 800) * CHARS_PER_TOKEN * 0.7))
+    pending = dropped[covered:]
+    # Au plus deux appels, pour ne pas bloquer la réponse une minute : chaque
+    # message est d'abord raccourci pour que tout tienne (le début de la
+    # conversation compte) ; en dernier recours seulement, les plus vieux sautent.
+    per_message = min(1500, max(150, (2 * batch_chars) // max(1, len(pending))))
+    while len(pending) > 2 and len(pending) * per_message > 2 * batch_chars:
+        pending = pending[1:]
+        covered += 1
+    # Chaque lot est résumé seul puis les résumés sont mis bout à bout : demander
+    # à un petit modèle de « mettre à jour » un résumé lui fait souvent tout
+    # réécrire à partir du dernier message.
+    parts = [summary] if summary else []
+    try:
+        while pending:
+            lines, used, taken = [], 0, 0
+            for m in pending:
+                who = "Utilisateur" if m.get("role") == "user" else "Assistant"
+                text = strip_think(content_text(m.get("content")))[:per_message]
+                if used + len(text) > batch_chars and lines:
+                    break
+                lines.append(f"{who} : {text}")
+                used += len(text)
+                taken += 1
+            # Consigne répétée après le texte : placée seulement avant, un petit
+            # modèle continue la conversation au lieu de la résumer.
+            parts.append(_unique_lines(complete(job.model_id, [
+                {"role": "system", "content": _SUMMARY_PROMPT},
+                {"role": "user", "content": "Messages :\n\n" + "\n\n".join(lines)
+                 + "\n\n---\nRésume la conversation ci-dessus en puces courtes (faits précis, noms, choix)."},
+            ], max_tokens=max_tokens)))
+            covered += taken
+            pending = pending[taken:]
+            summary = "\n".join(p.strip() for p in parts if p.strip())
+            if len(summary) > max_tokens * CHARS_PER_TOKEN:
+                summary = _unique_lines(complete(job.model_id, [
+                    {"role": "system", "content": _CONDENSE_PROMPT},
+                    {"role": "user", "content": summary + "\n\n---\nFusionne ces résumés en un seul, en puces courtes."},
+                ], max_tokens=max_tokens))
+                parts = [summary]
+            db.run(
+                "INSERT INTO summaries (conversation_id, covered, summary, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET covered = excluded.covered, "
+                "summary = excluded.summary, updated_at = excluded.updated_at",
+                (conversation_id, covered, summary, time.time()),
+            )
+        job.update_step(step, status="done")
+    except Exception as exc:
+        log(f"Résumé impossible: {exc}")
+        job.update_step(step, status="error", detail=str(exc)[:200])
+    return summary
+
+
+def _index_attachments(job: "GenerationJob", messages: list[dict], conversation_id: str) -> list[str]:
+    """Remplace les longues pièces jointes par un renvoi vers l'index documentaire."""
+    doc_ids: list[str] = []
+    for m in messages:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        new_parts = []
+        for part in m["content"]:
+            text = str(part.get("text") or "") if isinstance(part, dict) and part.get("type") == "text" else ""
+            header = _DOC_HEADER_RE.match(text) if text else None
+            if header and len(text) >= DOC_MIN_CHARS and conversation_id:
+                name = header.group(1)
+                doc_ids.append(index_document(conversation_id, name, text))
+                new_parts.append({"type": "text", "text": (
+                    f"[Document « {name} » ({len(text)} caractères) indexé : seuls les extraits "
+                    "pertinents sont fournis ; l'outil document_search permet d'en chercher d'autres.]"
+                )})
+            else:
+                new_parts.append(part)
+        m["content"] = new_parts
+    return doc_ids
+
+
+def build_context(job: "GenerationJob", body: dict, tools_tokens: int, use_memory: bool) -> list[dict]:
+    messages = [dict(m) for m in body.get("messages") or [] if isinstance(m, dict)]
+    system_parts: list[str] = []
+    if messages and messages[0].get("role") == "system":
+        system_parts.append(content_text(messages.pop(0).get("content")))
+    conversation_id = str(body.get("_lueur_conversation_id") or "")
+
+    last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    query = ""
+    if last_user:
+        content = last_user.get("content")
+        query = content if isinstance(content, str) else next(
+            (str(p.get("text") or "") for p in content or [] if isinstance(p, dict) and p.get("type") == "text"), ""
+        )
+    query = query[:1000]
+
+    ctx = model_context(job.model_id)
+    max_tokens = int(_number(body.get("max_tokens")) or 1024)
+    budget = max(1024, ctx - max_tokens - tools_tokens - 64)
+
+    # 1. Documents : indexés, remplacés par leurs extraits pertinents.
+    new_docs = _index_attachments(job, messages, conversation_id)
+    all_docs = conversation_documents(conversation_id)
+    if new_docs and last_user is not None:
+        found = search_documents(query or "résumé", [d["id"] for d in all_docs], k=4)
+        doc_chars = int(budget * 0.3 * CHARS_PER_TOKEN)
+        excerpts, used = [], 0
+        for f in found:
+            if used + len(f["text"]) > doc_chars:
+                break
+            excerpts.append(f"[« {f['name']} »]\n{f['text']}")
+            used += len(f["text"])
+        if excerpts:
+            extra = {"type": "text", "text": "Extraits pertinents des documents joints :\n\n" + "\n\n".join(excerpts)}
+            content = last_user.get("content")
+            last_user["content"] = (content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]) + [extra]
+            job.add_step({"type": "documents", "label": f"{len(excerpts)} extrait(s) de {len(set(new_docs))} document(s) indexé(s)", "status": "done"})
+    job.has_documents = bool(all_docs)
+
+    # 2. Images : seules celles du dernier message utilisateur restent.
+    for m in messages:
+        if m is not last_user and isinstance(m.get("content"), list):
+            m["content"] = [
+                p if not (isinstance(p, dict) and p.get("type") == "image_url")
+                else {"type": "text", "text": "[image d'un message précédent omise]"}
+                for p in m["content"]
+            ]
+
+    # 3. Mémoire long terme.
+    if use_memory:
+        memories = memory_search(query) if query else []
+        if memories:
+            lines, used = [], 0
+            for mem in memories:
+                used += len(mem["text"])
+                if used > budget * 0.15 * CHARS_PER_TOKEN:
+                    break
+                lines.append(f"- {mem['text']}")
+            system_parts.append(
+                "Informations mémorisées sur l'utilisateur (à utiliser seulement si c'est pertinent) :\n" + "\n".join(lines)
+            )
+            job.add_step({"type": "memory", "label": f"{len(lines)} souvenir(s) utilisé(s)",
+                          "items": [m["text"] for m in memories[:len(lines)]], "status": "done"})
+
+    system_text = "\n\n".join(p for p in system_parts if p.strip())
+    remaining = budget - estimate_tokens(system_text)
+
+    # 4. Messages récents, du plus récent au plus ancien.
+    history_tokens = sum(estimate_tokens(m.get("content")) for m in messages)
+    summary_tokens = 0
+    if history_tokens > remaining and conversation_id:
+        summary_tokens = min(350, max(120, remaining // 5))
+    available = remaining - summary_tokens
+    kept: list[dict] = []
+    index = len(messages) - 1
+    while index >= 0:
+        m = messages[index]
+        cost = estimate_tokens(m.get("content"))
+        if cost > available:
+            if kept:
+                break
+            m["content"] = _clip(m.get("content"), max(200, available))
+            cost = available
+        kept.insert(0, m)
+        available -= cost
+        index -= 1
+    dropped = messages[:index + 1]
+    # Un historique qui commence par une réponse de l'assistant perturbe certains modèles.
+    while kept and kept[0].get("role") == "assistant" and len(kept) > 1:
+        dropped.append(kept.pop(0))
+
+    # 5. Résumé glissant de ce qui ne tient plus.
+    if dropped and conversation_id:
+        summary = conversation_summary(job, conversation_id, dropped, summary_tokens or 300)
+        if summary:
+            system_text += ("\n\n" if system_text else "") + "Résumé du début de la conversation :\n" + summary
+
+    out = ([{"role": "system", "content": system_text}] if system_text else []) + kept
+    for m in out:
+        m["content"] = _flatten(m.get("content"))
+    return out
+
+
+# ---- Boucle agent -------------------------------------------------------------
+
+class UpstreamHTTPError(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _merge_tool_calls(acc: dict[int, dict], deltas: list) -> None:
+    for d in deltas:
+        if not isinstance(d, dict):
+            continue
+        fn = d.get("function") or {}
+        index = d.get("index")
+        if not isinstance(index, int):
+            index = len(acc) if (d.get("id") or fn.get("name") or not acc) else max(acc)
+        entry = acc.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+        if d.get("id"):
+            entry["id"] = str(d["id"])
+        if fn.get("name"):
+            entry["function"]["name"] += str(fn["name"])
+        if fn.get("arguments"):
+            args = fn["arguments"]
+            entry["function"]["arguments"] += args if isinstance(args, str) else json.dumps(args)
+
+
+_TEXT_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def stream_turn(job: "GenerationJob", model_id: str, request: dict) -> tuple[str, list[dict]]:
+    """Un appel modèle streamé : le texte va dans job.content, les appels
+    d'outils sont accumulés et renvoyés."""
+    conn, res = open_completion(model_id, request)
+    try:
+        with job.cond:
+            job.conn = conn
+            job.http_status = res.status
+        if res.status >= 400:
+            detail = res.read().decode("utf-8", "replace")
+            raise UpstreamHTTPError(res.status, upstream_error_message(detail, res.status))
+
+        turn_text = ""
+        calls: dict[int, dict] = {}
+        finished = False
+        while not job.cancelled:
+            line = res.readline()
+            if not line:
+                if job.cancelled or finished:
+                    break
+                raise RuntimeError("Flux modèle interrompu")
+            text = line.decode("utf-8", "replace").strip()
+            if not text.startswith("data:"):
+                continue
+            data = text[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                payload = json.loads(data)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            job.update_usage(payload)
+            if payload.get("error"):
+                err = payload["error"]
+                raise RuntimeError(str(err.get("message") or err) if isinstance(err, dict) else str(err))
+            choices = payload.get("choices") or [{}]
+            choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+            if choice.get("finish_reason"):
+                finished = True
+            delta = choice.get("delta") or {}
+            if delta.get("tool_calls"):
+                _merge_tool_calls(calls, delta["tool_calls"])
+            token = delta.get("content")
+            if token:
+                turn_text += str(token)
+                with job.cond:
+                    if job.first_token_at is None:
+                        job.first_token_at = time.time()
+                    job.content += str(token)
+                    job.updated_at = time.time()
+                    job.cond.notify_all()
+            elif delta.get("reasoning_content"):
+                with job.cond:
+                    job.updated_at = time.time()
+                    job.cond.notify_all()
+    finally:
+        conn.close()
+        with job.cond:
+            job.conn = None
+
+    tool_calls = [calls[i] for i in sorted(calls) if calls[i]["function"]["name"]]
+    if not tool_calls and request.get("tools") and "<tool_call>" in turn_text:
+        # Modèle local sans parseur d'outils (llama-server sans --jinja) :
+        # on récupère le format texte de Qwen et on l'efface de la réponse.
+        for i, match in enumerate(_TEXT_TOOL_CALL_RE.finditer(turn_text)):
+            data = parse_json_object(match.group(1))
+            if data.get("name"):
+                tool_calls.append({"id": f"call_{i}", "type": "function", "function": {
+                    "name": str(data["name"]),
+                    "arguments": json.dumps(data.get("arguments") or {}, ensure_ascii=False),
+                }})
+        if tool_calls:
+            cleaned = _TEXT_TOOL_CALL_RE.sub("", turn_text)
+            with job.cond:
+                job.content = job.content[: len(job.content) - len(turn_text)] + cleaned
+                job.cond.notify_all()
+            turn_text = cleaned
+    for i, call in enumerate(tool_calls):
+        call["id"] = call["id"] or f"call_{int(time.time() * 1000)}_{i}"
+    return turn_text, tool_calls
+
+
+def _trim_messages(messages: list[dict], budget: int) -> None:
+    """Raccourcit les plus anciens résultats d'outils si le contexte déborde."""
+    total = sum(estimate_tokens(m.get("content")) for m in messages)
+    for m in messages:
+        if total <= budget:
+            return
+        if m.get("role") == "tool" and len(str(m.get("content") or "")) > 400:
+            before = estimate_tokens(m["content"])
+            m["content"] = str(m["content"])[:300] + "\n[… résultat raccourci pour le contexte …]"
+            total -= before - estimate_tokens(m["content"])
+
+
+def agent_system_prompt(tool_names: list[str]) -> str:
+    lines = [f"Tu peux utiliser des outils. Date et heure : {now_text()}."]
+    if "web_search" in tool_names:
+        lines.append("- Pour une information récente, factuelle ou incertaine, utilise web_search puis, si "
+                     "les extraits ne suffisent pas, fetch_url. Cite les URL des sources utilisées.")
+    if "memory_save" in tool_names:
+        lines.append("- Quand l'utilisateur partage une information durable le concernant, enregistre-la avec memory_save.")
+    if "document_search" in tool_names:
+        lines.append("- Pour les documents joints, utilise document_search.")
+    lines.append("- N'appelle pas d'outil si tu peux répondre directement. Réponds dans la langue de l'utilisateur.")
+    return "\n".join(lines)
+
+
+def run_agent(job: "GenerationJob", model_id: str, base: dict, messages: list[dict],
+              tool_names: list[str], conversation_id: str) -> None:
+    tools = [TOOLS[n]["schema"] for n in tool_names]
+    local = provider_name(model_id) == "local"
+    tool_ctx = {"conversation_id": conversation_id, "result_chars": 1800 if local else 6000}
+    budget = model_context(model_id) - int(_number(base.get("max_tokens")) or 1024) - 64
+
+    for step_index in range(AGENT_MAX_STEPS):
+        if job.cancelled:
+            return
+        last = step_index == AGENT_MAX_STEPS - 1
+        request = {**base, "messages": messages, "stream": True}
+        if tools and not last:
+            request["tools"] = tools
+            request["tool_choice"] = "auto"
+        try:
+            text, calls = stream_turn(job, model_id, request)
+        except UpstreamHTTPError as exc:
+            if step_index == 0 and tools and exc.status in (400, 404, 422, 500) and "tool" in str(exc).lower():
+                # Modèle ou fournisseur sans function calling : réponse simple.
+                job.add_step({"type": "info", "label": "Outils non pris en charge par ce modèle", "status": "done"})
+                tools = []
+                continue
+            raise
+        if not calls or job.cancelled:
+            return
+
+        messages.append({"role": "assistant", "content": text or None, "tool_calls": calls})
+        for call in calls:
+            if job.cancelled:
+                return
+            name = call["function"]["name"]
+            args = parse_json_object(call["function"].get("arguments") or "{}")
+            spec = TOOLS.get(name)
+            step = job.add_step({
+                "type": "tool", "name": name,
+                "label": str((spec or {}).get("label") or name),
+                "detail": tool_step_detail(name, args), "status": "running",
+            })
+            if not spec or name not in tool_names:
+                result = f"Erreur: outil inconnu « {name} »."
+            else:
+                try:
+                    result = str(spec["fn"](args, tool_ctx))
+                except Exception as exc:
+                    result = f"Erreur: {exc}"
+            ok = not result.startswith("Erreur")
+            job.update_step(step, status="done" if ok else "error", preview=result[:240])
+            limit = int(tool_ctx["result_chars"])
+            messages.append({
+                "role": "tool", "tool_call_id": call["id"], "name": name,
+                "content": result if len(result) <= limit else result[:limit] + "\n[… tronqué …]",
+            })
+        _trim_messages(messages, budget - len(json.dumps(tools)) // 3)
+        if text:
+            with job.cond:
+                job.content += "\n\n"
+                job.cond.notify_all()
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -1269,6 +2783,10 @@ class RouterHandler(BaseHTTPRequestHandler):
                 "loading_model": _loading_model,
                 "idle_unload_s": IDLE_UNLOAD,
                 "background_generations": True,
+                "agent": True,
+                "tools": list(TOOLS),
+                "search": "searxng" if SEARXNG_URL else "duckduckgo+wikipedia",
+                "embeddings": embedder.state,
                 "providers": provider_statuses(),
             })
             return
@@ -1318,6 +2836,13 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(200, {"providers": provider_statuses()})
             return
 
+        if path == "/lueur/memory":
+            try:
+                self._json(200, {"memories": memory_list(), "embeddings": embedder.state})
+            except Exception as e:
+                self._json(500, {"error": {"message": str(e)}})
+            return
+
         if path.startswith("/lueur/generations/"):
             suffix = path[len("/lueur/generations/"):].strip("/")
             if suffix.endswith("/stream"):
@@ -1359,6 +2884,10 @@ class RouterHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": {"message": str(e)}})
             return
 
+        if path == "/lueur/memory" or path.startswith("/lueur/memory/"):
+            self._memory_post(path)
+            return
+
         if path == "/models/unload":
             stop_model()
             self._json(200, {"status": "ok"})
@@ -1378,6 +2907,27 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         self._json(404, {"error": {"message": "Not found"}})
+
+    def _memory_post(self, path: str) -> None:
+        try:
+            if path == "/lueur/memory":
+                body = self._read_json()
+                self._json(200, memory_add(str(body.get("text") or ""), source="user"))
+            elif path == "/lueur/memory/clear":
+                memory_clear()
+                self._json(200, {"status": "ok"})
+            elif path.endswith("/delete"):
+                memory_id = int(path[len("/lueur/memory/"):-len("/delete")].strip("/"))
+                if memory_delete(memory_id):
+                    self._json(200, {"status": "ok", "id": memory_id})
+                else:
+                    self._json(404, {"error": {"message": "Souvenir introuvable"}})
+            else:
+                self._json(404, {"error": {"message": "Not found"}})
+        except ValueError as e:
+            self._json(400, {"error": {"message": str(e)}})
+        except Exception as e:
+            self._json(500, {"error": {"message": str(e)}})
 
     def _chat_completions(self) -> None:
         try:
@@ -1403,13 +2953,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": f"Modèle inconnu: {model_id}"}})
             return
 
-        if (
-            provider_name(model_id) == "local"
-            and not THINKING
-            and MODELS[model_id].get("thinking")
-            and "chat_template_kwargs" not in body
-        ):
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+        disable_thinking_if_needed(model_id, body)
 
         if stream:
             # Lueur background mode: generation belongs to the router. If the
@@ -1470,6 +3014,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+        sent_steps = -1
         try:
             while True:
                 with job.cond:
@@ -1478,12 +3023,30 @@ class RouterHandler(BaseHTTPRequestHandler):
                     error = job.error
                     error_code = job.error_code
 
-                    if len(content) <= cursor and status == "running":
+                    if len(content) <= cursor and status == "running" and job.steps_version == sent_steps:
                         job.cond.wait(timeout=10)
                         content = job.content
                         status = job.status
                         error = job.error
                         error_code = job.error_code
+                    steps_version = job.steps_version
+                    steps = [dict(st) for st in job.steps] if steps_version != sent_steps else None
+
+                if steps is not None:
+                    sent_steps = steps_version
+                    if steps or steps_version:
+                        raw = json.dumps({"choices": [], "lueur": {"job_id": job.id, "steps": steps}}, ensure_ascii=False)
+                        self.wfile.write(f"data: {raw}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+
+                if len(content) < cursor:
+                    # Texte réécrit côté router (appel d'outil au format texte retiré) :
+                    # on renvoie tout et l'UI remplace son contenu.
+                    raw = json.dumps({"choices": [], "lueur": {"job_id": job.id, "replace": content, "cursor": len(content)}}, ensure_ascii=False)
+                    self.wfile.write(f"data: {raw}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    cursor = len(content)
+                    continue
 
                 if len(content) > cursor:
                     delta = content[cursor:]
@@ -1655,6 +3218,7 @@ def cleanup() -> None:
         proc = _model_proc
         if proc and proc.poll() is None:
             proc.kill()
+    embedder.stop()
 
 
 def main(argv: list[str]) -> int:
@@ -1683,11 +3247,15 @@ def main(argv: list[str]) -> int:
     if IDLE_UNLOAD > 0:
         threading.Thread(target=idle_unload_loop, name="lueur-idle-unload", daemon=True).start()
 
+    store()  # crée la base SQLite dès le démarrage
+    embedder.start_async()
+
     log(f"Lueur router: http://{HOST}:{PORT}")
     log(f"llama-server interne: http://{MODEL_HOST}:{MODEL_PORT}")
     configured = sum(1 for p in provider_statuses().values() if p["configured"])
     log(f"Modèles: {len(MODELS)} · fournisseurs configurés: {configured}/{len(PROVIDERS)}")
     log("Le local garde un seul modèle GGUF NPU en RAM; les modèles manquants sont téléchargés à la demande.")
+    log(f"Agent: {len(TOOLS)} outils · recherche {'SearXNG' if SEARXNG_URL else 'DuckDuckGo + Wikipedia'} · mémoire {DB_PATH}")
     if IDLE_UNLOAD > 0:
         log(f"Déchargement automatique du modèle local après {IDLE_UNLOAD}s d'inactivité.")
     try:

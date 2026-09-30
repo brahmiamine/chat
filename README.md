@@ -318,6 +318,21 @@ chmod +x ~/start-ai.sh
 
 Le router lit le champ OpenAI `model`. Pour un modèle local, il charge automatiquement le GGUF demandé et libère le précédent. Pour un modèle cloud, il garde le modèle local chargé (déchargé après `LUEUR_IDLE_UNLOAD` secondes d'inactivité, ou tout de suite avec `LUEUR_CLOUD_UNLOAD=1`), remplace l'identifiant Lueur par l'identifiant du fournisseur et relaie la requête HTTPS/SSE avec la clé conservée dans Termux.
 
+## Agent : outils, mémoire, résumés, documents
+
+Le router Termux fait tourner un agent **à l'intérieur des générations en arrière-plan** : outils, mémoire et résumés continuent même si le navigateur est fermé, et l'UI se reconnecte au même job. Les étapes (recherche, calcul, souvenirs utilisés…) s'affichent au-dessus de chaque réponse.
+
+| Brique | Fonctionnement |
+| --- | --- |
+| Outils | `web_search` (SearXNG si `LUEUR_SEARXNG_URL`, sinon DuckDuckGo puis Wikipedia), `fetch_url` (adresses internes refusées), `calculator`, `current_datetime`, `memory_search`, `memory_save`, `document_search` |
+| Function calling | llama-server lancé avec `--jinja` ; Phi-4 Mini et DeepSeek R1 n'utilisent pas d'outils (appels mal formés), mais gardent mémoire et résumés |
+| Contexte | l'UI envoie tout l'historique ; le router le fait tenir dans le contexte réel du modèle (4096 en local) : résumé glissant des anciens messages (mis en cache), souvenirs, extraits de documents, messages récents |
+| Mémoire long terme | SQLite (`~/.lueur/lueur.db`) ; extraction automatique en arrière-plan quand le modèle est libre ; injection des souvenirs pertinents ; gestion dans **Paramètres → Agent & mémoire** |
+| Embeddings | second llama-server sur CPU avec Qwen3-Embedding-0.6B Q8_0 (639 Mo, port 8082) ; en attendant qu'il soit prêt, recherche par mots-clés |
+| Documents | une pièce jointe longue est découpée et indexée ; seuls les extraits pertinents vont au modèle |
+
+La mémoire est envoyée aux modèles cloud seulement si « Mémoire avec les modèles cloud » est activée. Via le Worker Cloudflare, les jobs sont transmis au router du téléphone quand `LUEUR_LOCAL_URL` est joignable (pour les modèles cloud, le router doit avoir la clé du fournisseur dans `~/.lueur.env`).
+
 ## Modèles texte de test
 
 Les modèles texte supplémentaires sont chargés à la demande par le router :

@@ -5,7 +5,7 @@
  * resumable background generations. Those jobs are owned by the router, so a
  * browser/tab disconnect does not cancel llama.cpp.
  */
-import type { ChatCompletionParams, GenerationMetrics, HealthStatus, ProviderConfig, ServerInfo, TokenCountSource } from '../types';
+import type { AgentStep, ChatCompletionParams, GenerationMetrics, HealthStatus, MemoryItem, ProviderConfig, RouterCapabilities, ServerInfo, TokenCountSource } from '../types';
 
 /** The response had started, then the connection dropped mid-stream (not a CORS issue). */
 export class StreamInterruptedError extends Error {
@@ -55,8 +55,22 @@ export interface BackgroundGeneration {
   error?: string | null;
   error_code?: number | null;
   updated_at?: number;
+  steps?: AgentStep[];
   metrics?: RouterGenerationMetrics;
 }
+
+/** Router side-channel carried in SSE chunks (`lueur` field). */
+export interface LueurMeta {
+  job_id?: string;
+  cursor?: number;
+  status?: string;
+  /** Full list of agent steps, sent whenever it changes. */
+  steps?: AgentStep[];
+  /** The router rewrote the answer (e.g. removed a textual tool call). */
+  replace?: string;
+}
+
+export type MetaHandler = (meta: LueurMeta) => void;
 
 export function generationMetrics(snapshot: BackgroundGeneration): GenerationMetrics | undefined {
   const m = snapshot.metrics;
@@ -128,6 +142,7 @@ async function* parseSse(
   res: Response,
   signal: AbortSignal,
   strictDone = false,
+  onMeta?: MetaHandler,
 ): AsyncGenerator<string, void, void> {
   if (!res.body) throw new LLMApiError(res.status, 'Empty response body');
 
@@ -175,6 +190,8 @@ async function* parseSse(
           );
         }
 
+        if (chunk.lueur && onMeta) onMeta(chunk.lueur as LueurMeta);
+
         const delta = chunk.choices?.[0]?.delta;
         if (delta?.content) yield delta.content as string;
         else if (delta?.reasoning_content) yield '';
@@ -209,19 +226,26 @@ export async function checkHealth(cfg: ProviderConfig, timeoutMs = 4000): Promis
   return 'offline';
 }
 
-/** True only for Lueur's router that can keep a generation alive server-side. */
-export async function supportsBackgroundGenerations(cfg: ProviderConfig): Promise<boolean> {
+/** Background generations and agent support, as announced by GET /health. */
+export async function getRouterCapabilities(cfg: ProviderConfig): Promise<RouterCapabilities> {
   try {
     const res = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/health`, {
       headers: authHeaders(cfg),
       signal: timeoutSignal(4000),
     });
-    if (!res.ok) return false;
+    if (!res.ok) return { background: false, agent: false };
     const body = await res.json();
-    return body?.background_generations === true;
+    const background = body?.background_generations === true;
+    // The agent runs inside router-owned background jobs.
+    return { background, agent: background && body?.agent === true };
   } catch {
-    return false;
+    return { background: false, agent: false };
   }
+}
+
+/** True only for Lueur's router that can keep a generation alive server-side. */
+export async function supportsBackgroundGenerations(cfg: ProviderConfig): Promise<boolean> {
+  return (await getRouterCapabilities(cfg)).background;
 }
 
 /** GET /v1/models — ids of models exposed by the server. */
@@ -277,10 +301,15 @@ export async function* streamBackgroundChat(
   params: ChatCompletionParams,
   jobId: string,
   signal: AbortSignal,
+  onMeta?: MetaHandler,
 ): AsyncGenerator<string, void, void> {
   const base = normalizeBaseUrl(cfg.baseUrl);
   let cursor = 0;
   let initial = true;
+  const meta: MetaHandler = m => {
+    if (typeof m.replace === 'string') cursor = m.cursor ?? codePointLength(m.replace);
+    onMeta?.(m);
+  };
 
   while (!signal.aborted) {
     try {
@@ -308,7 +337,7 @@ export async function* streamBackgroundChat(
       if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
       initial = false;
 
-      for await (const token of parseSse(res, signal, true)) {
+      for await (const token of parseSse(res, signal, true, meta)) {
         if (token) cursor += codePointLength(token);
         yield token;
       }
@@ -331,9 +360,14 @@ export async function* resumeBackgroundChat(
   jobId: string,
   cursor: number,
   signal: AbortSignal,
+  onMeta?: MetaHandler,
 ): AsyncGenerator<string, void, void> {
   const base = normalizeBaseUrl(cfg.baseUrl);
   let offset = Math.max(0, cursor);
+  const meta: MetaHandler = m => {
+    if (typeof m.replace === 'string') offset = m.cursor ?? codePointLength(m.replace);
+    onMeta?.(m);
+  };
 
   while (!signal.aborted) {
     try {
@@ -343,7 +377,7 @@ export async function* resumeBackgroundChat(
       );
       if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
 
-      for await (const token of parseSse(res, signal, true)) {
+      for await (const token of parseSse(res, signal, true, meta)) {
         if (token) offset += codePointLength(token);
         yield token;
       }
@@ -399,8 +433,42 @@ export async function isReachableIgnoringCors(cfg: ProviderConfig): Promise<bool
   }
 }
 
+// ---- Long-term memory (Lueur router) ----
+
+async function memoryRequest<T>(cfg: ProviderConfig, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/lueur/memory${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: body === undefined ? authHeaders(cfg) : jsonHeaders(cfg),
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: timeoutSignal(15000),
+  });
+  if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
+  return res.json();
+}
+
+export function listMemories(cfg: ProviderConfig): Promise<{ memories: MemoryItem[]; embeddings?: string }> {
+  return memoryRequest(cfg, '');
+}
+
+export function addMemory(cfg: ProviderConfig, text: string): Promise<{ id: number; text: string; status: string }> {
+  return memoryRequest(cfg, '', { text });
+}
+
+export function deleteMemory(cfg: ProviderConfig, id: number): Promise<unknown> {
+  return memoryRequest(cfg, `/${id}/delete`, {});
+}
+
+export function clearMemories(cfg: ProviderConfig): Promise<unknown> {
+  return memoryRequest(cfg, '/clear', {});
+}
+
 export const llmApi = {
   checkHealth,
+  getRouterCapabilities,
+  listMemories,
+  addMemory,
+  deleteMemory,
+  clearMemories,
   listModels,
   getServerInfo,
   streamChat,

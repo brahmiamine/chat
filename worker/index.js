@@ -329,14 +329,60 @@ function upstreamError(raw, status) {
   return text.slice(0, 4000);
 }
 
-async function proxyChat(request, env, origin) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: { message: 'JSON invalide' } }, 400, origin);
-  }
+// ---- Termux router (background generations + agent) ----
+//
+// When LUEUR_LOCAL_URL points to the Lueur router on the phone, the Worker
+// forwards router-owned jobs to it: the generation (and the agent's tools,
+// memory, summaries) keeps running on the phone even if the browser closes,
+// and the UI can reconnect through /lueur/generations/<id>/stream.
 
+let routerHealthCache = { at: 0, url: '', value: null };
+
+function localRouterUrl(env) {
+  return clean(env.LUEUR_LOCAL_URL).replace(/\/+$/, '');
+}
+
+async function routerHealth(env) {
+  const localUrl = localRouterUrl(env);
+  if (!localUrl) return null;
+  const now = Date.now();
+  if (routerHealthCache.url === localUrl && now - routerHealthCache.at < 15000) return routerHealthCache.value;
+  let value = null;
+  try {
+    const res = await fetch(`${localUrl}/health`, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) value = await res.json();
+  } catch {
+    value = null;
+  }
+  routerHealthCache = { at: now, url: localUrl, value };
+  return value;
+}
+
+async function proxyToRouter(env, origin, path, init = {}) {
+  const localUrl = localRouterUrl(env);
+  let response;
+  try {
+    response = await fetch(`${localUrl}${path}`, init);
+  } catch (error) {
+    routerHealthCache.at = 0;
+    return json({
+      error: { message: `Router Lueur injoignable: ${error instanceof Error ? error.message : String(error)}` },
+    }, 502, origin);
+  }
+  const headers = new Headers(corsHeaders(origin));
+  headers.set('Content-Type', response.headers.get('Content-Type') || 'application/json');
+  headers.set('Cache-Control', 'no-store');
+  headers.set('X-Lueur-Provider', 'termux-router');
+  return new Response(response.body, { status: response.status, headers });
+}
+
+/** A job can run on the router when it knows the model's provider (it holds its own keys). */
+function routerCanRun(health, providerId) {
+  if (!health?.background_generations) return false;
+  return providerId === 'local' || health.providers?.[providerId]?.configured === true;
+}
+
+async function proxyChat(body, env, origin) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return json({ error: { message: 'Corps de requête invalide' } }, 400, origin);
   }
@@ -349,9 +395,20 @@ async function proxyChat(request, env, origin) {
   }
 
   const providerId = model.provider;
-  const upstream = { ...body };
-  delete upstream._lueur_job_id;
-  delete upstream._lueur_cursor;
+
+  if (body._lueur_job_id) {
+    const health = await routerHealth(env);
+    if (routerCanRun(health, providerId)) {
+      return proxyToRouter(env, origin, '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        body: JSON.stringify(body),
+      });
+    }
+  }
+
+  // Direct provider call: router-only fields must never reach a provider.
+  const upstream = Object.fromEntries(Object.entries(body).filter(([key]) => !key.startsWith('_lueur_')));
 
   let url;
   let headers;
@@ -469,10 +526,14 @@ export default {
     }
 
     if (request.method === 'GET' && url.pathname === '/health') {
+      const health = await routerHealth(env);
       return json({
         status: 'ok',
-        router: 'cloudflare-worker',
-        background_generations: false,
+        router: health ? 'cloudflare-worker+termux' : 'cloudflare-worker',
+        // Jobs are forwarded to the phone's router when it is reachable.
+        background_generations: health?.background_generations === true,
+        agent: health?.agent === true,
+        embeddings: health?.embeddings,
         providers: providerStatuses(env),
       }, 200, origin);
     }
@@ -497,6 +558,19 @@ export default {
       return modelsResponse(origin, env, true);
     }
 
+    // Background jobs (stream/snapshot/cancel) and long-term memory live on the router.
+    if (url.pathname.startsWith('/lueur/') && (request.method === 'GET' || request.method === 'POST')) {
+      if (!origin && clean(env.LUEUR_ALLOW_DIRECT) !== '1') {
+        return json({ error: { message: 'Requête directe refusée.' } }, 403, '');
+      }
+      if (!localRouterUrl(env)) {
+        return json({ error: { message: 'LUEUR_LOCAL_URL non configuré' } }, 503, origin);
+      }
+      return proxyToRouter(env, origin, url.pathname + url.search, request.method === 'POST'
+        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: await request.text() }
+        : { headers: { Accept: request.headers.get('Accept') || '*/*' } });
+    }
+
     if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
       // The GitHub Pages frontend always sends Origin. Reject anonymous
       // origin-less POSTs by default so the Worker is not an entirely open
@@ -509,7 +583,13 @@ export default {
           },
         }, 403, '');
       }
-      return proxyChat(request, env, origin);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: { message: 'JSON invalide' } }, 400, origin);
+      }
+      return proxyChat(body, env, origin);
     }
 
     if (env.ASSETS && request.method === 'GET') return env.ASSETS.fetch(request);

@@ -40,8 +40,22 @@ export function splitThink(t: string): { text: string; thinking: boolean } {
   return { text: (t.slice(0, o) + t.slice(c + 8)).replace(/^\s+/, ''), thinking: false };
 }
 
-function userWireContent(m: UserMessage): { content: ApiChatMessage['content']; cost: number } {
+export interface HistoryOptions {
+  /**
+   * Send the whole conversation: the Lueur router fits it to the model's
+   * context itself (rolling summary, memory, document retrieval).
+   */
+  full?: boolean;
+  /** One text part per attached file, so the router can index long ones. */
+  splitFiles?: boolean;
+}
+
+function userWireContent(
+  m: UserMessage,
+  { splitFiles = false, media: keepMedia = true }: { splitFiles?: boolean; media?: boolean } = {},
+): { content: ApiChatMessage['content']; cost: number } {
   const text: string[] = [];
+  const files: string[] = [];
   const media: ApiChatContentPart[] = [];
   let imageCount = 0;
 
@@ -51,33 +65,42 @@ function userWireContent(m: UserMessage): { content: ApiChatMessage['content']; 
     const kind = f.kind || (f.dataUrl ? 'image' : 'text');
 
     if (kind === 'image' && f.dataUrl) {
-      text.push(`[Image jointe : ${f.name}]`);
-      media.push({ type: 'image_url', image_url: { url: f.dataUrl } });
-      imageCount++;
-      continue;
-    }
-
-    if (kind === 'pdf') {
-      const pageInfo = f.pageCount ? ` (${f.pageCount} page(s))` : '';
-      if (f.text) text.push(`PDF « ${f.name} »${pageInfo} :\n${f.text}`);
-      for (const [i, url] of (f.images || []).entries()) {
-        text.push(`[PDF « ${f.name} », page image ${i + 1}]`);
-        media.push({ type: 'image_url', image_url: { url } });
+      text.push(keepMedia ? `[Image jointe : ${f.name}]` : `[Image jointe : ${f.name} (omise)]`);
+      if (keepMedia) {
+        media.push({ type: 'image_url', image_url: { url: f.dataUrl } });
         imageCount++;
       }
       continue;
     }
 
-    if (f.text) text.push(`Fichier « ${f.name} » :\n${f.text}`);
+    if (kind === 'pdf') {
+      const pageInfo = f.pageCount ? ` (${f.pageCount} page(s))` : '';
+      if (f.text) (splitFiles ? files : text).push(`PDF « ${f.name} »${pageInfo} :\n${f.text}`);
+      for (const [i, url] of (f.images || []).entries()) {
+        text.push(`[PDF « ${f.name} », page image ${i + 1}]`);
+        if (keepMedia) {
+          media.push({ type: 'image_url', image_url: { url } });
+          imageCount++;
+        }
+      }
+      continue;
+    }
+
+    if (f.text) (splitFiles ? files : text).push(`Fichier « ${f.name} » :\n${f.text}`);
   }
 
-  const joined = text.join('\n\n') || (media.length ? 'Analyse les éléments joints.' : '');
-  if (!media.length) return { content: joined, cost: joined.length };
+  const joined = text.join('\n\n') || (media.length || files.length ? 'Analyse les éléments joints.' : '');
+  if (!media.length && !files.length) return { content: joined, cost: joined.length };
 
-  const content: ApiChatContentPart[] = [{ type: 'text', text: joined }, ...media];
+  const content: ApiChatContentPart[] = [
+    { type: 'text', text: joined },
+    ...files.map(f => ({ type: 'text' as const, text: f })),
+    ...media,
+  ];
+  const textCost = joined.length + files.reduce((n, f) => n + f.length, 0);
   // Vision tokenization depends on image resolution/model. This rough cost keeps
   // long chat history from crowding image requests on a small local context.
-  return { content, cost: joined.length + imageCount * 3200 };
+  return { content, cost: textCost + imageCount * 3200 };
 }
 
 function fitContent(content: ApiChatMessage['content'], maxCost: number): ApiChatMessage['content'] {
@@ -105,19 +128,24 @@ function fitContent(content: ApiChatMessage['content'], maxCost: number): ApiCha
 
 /**
  * Builds the `messages` array sent to the API: system prompt + as much recent
- * history as fits in (contextSize − maxTokens), estimated at ~3.2 chars/token.
+ * history as fits in (contextSize − maxTokens), estimated at ~3.2 chars/token
+ * (or the whole history with `full`, for the Lueur router's context manager).
  * Images are kept as OpenAI-compatible `image_url` content parts for llama.cpp.
  */
-export function buildHistory(msgs: Message[], s: Settings): ApiChatMessage[] {
+export function buildHistory(msgs: Message[], s: Settings, opts: HistoryOptions = {}): ApiChatMessage[] {
   const out: ApiChatMessage[] = [];
-  let budget = Math.max(512, s.contextSize - s.maxTokens) * 3.2;
+  // Full mode still caps the payload (~2 M chars) for very long conversations.
+  let budget = opts.full ? 2_000_000 : Math.max(512, s.contextSize - s.maxTokens) * 3.2;
   const usable = msgs.filter(m => m.role === 'user' || ((m.status === 'done' || m.status === 'stopped') && m.content));
+  const lastUser = usable.map(m => m.role).lastIndexOf('user');
 
   for (let i = usable.length - 1; i >= 0; i--) {
     const m = usable[i];
 
     if (m.role === 'user') {
-      const wire = userWireContent(m);
+      // In full mode only the latest message keeps its images: older ones
+      // would be dropped by the router anyway and weigh megabytes of base64.
+      const wire = userWireContent(m, { splitFiles: opts.splitFiles, media: !opts.full || i === lastUser });
       if (wire.cost > budget) {
         if (out.length) break;
         out.unshift({ role: 'user', content: fitContent(wire.content, Math.max(800, budget)) });

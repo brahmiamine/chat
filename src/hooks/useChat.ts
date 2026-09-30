@@ -11,8 +11,8 @@
  * - Explicit "Stop" still cancels the router-owned job.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AssistantMessage, AttachedFile, ChatError, Conversation, GenerationMetrics, MessageStatus, Settings, UserMessage } from '../types';
-import { generationMetrics, LLMApiError, llmApi } from '../services/llmApi';
+import type { AgentStep, AssistantMessage, AttachedFile, ChatCompletionParams, ChatError, Conversation, GenerationMetrics, MessageStatus, Settings, UserMessage } from '../types';
+import { generationMetrics, LLMApiError, llmApi, type LueurMeta } from '../services/llmApi';
 import { demoStream } from '../services/demoProvider';
 import { conversationDb } from '../services/db';
 import { diagnoseError, type AbortReason } from '../services/errors';
@@ -159,6 +159,15 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     persist(cid);
   }, [patchConv, persist]);
 
+  /** Agent steps are rare events: store them on the message right away. */
+  const setSteps = useCallback((cid: string, mid: string, steps: AgentStep[]) => {
+    patchConv(cid, c => ({
+      ...c,
+      messages: c.messages.map(m => (m.id === mid ? { ...m, steps } as AssistantMessage : m)),
+    }));
+    persist(cid);
+  }, [patchConv, persist]);
+
   // ---- generation ----
   const generate = useCallback(async (cid: string, overrides?: Partial<Settings>) => {
     const conv = convsRef.current.find(c => c.id === cid);
@@ -166,7 +175,6 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
 
     const s = { ...settingsRef.current, ...overrides };
     const model = currentModel(s);
-    const history = buildHistory(conv.messages, s);
     const generationStartedAt = Date.now();
     let firstTokenAt: number | undefined;
     let metrics: GenerationMetrics | undefined;
@@ -242,6 +250,15 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       }
     };
 
+    const onMeta = (meta: LueurMeta) => {
+      if (Array.isArray(meta.steps)) setSteps(cid, aid, meta.steps);
+      if (typeof meta.replace === 'string') {
+        full = meta.replace;
+        pending = '';
+        setLive({ cid, mid: aid, content: full });
+      }
+    };
+
     const arm = () => {
       if (current.background) return;
       clearTimeout(timer);
@@ -264,24 +281,32 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
         stream = demoStream(lastUser?.content || '', ctrl.signal);
       } else {
         const cfg = { baseUrl: s.baseUrl, apiKey: s.apiKey };
-        const background = await llmApi.supportsBackgroundGenerations(cfg);
+        const caps = await llmApi.getRouterCapabilities(cfg);
+        const background = caps.background;
         current.background = background;
 
         if (background && current.jobId) {
           clearTimeout(timer);
-          stream = llmApi.streamBackgroundChat(
-            cfg,
-            {
-              model: model.id,
-              messages: history,
-              temperature: s.temperature,
-              top_p: s.topP,
-              max_tokens: s.maxTokens,
-            },
-            current.jobId,
-            ctrl.signal,
-          );
+          const params: ChatCompletionParams = {
+            model: model.id,
+            // With the agent router, send everything: it summarizes, retrieves
+            // memories/documents and fits the model's real context itself.
+            messages: caps.agent
+              ? buildHistory(conv.messages, s, { full: true, splitFiles: true })
+              : buildHistory(conv.messages, s),
+            temperature: s.temperature,
+            top_p: s.topP,
+            max_tokens: s.maxTokens,
+          };
+          if (caps.agent) {
+            params._lueur_context = true;
+            params._lueur_conversation_id = cid;
+            params._lueur_agent = s.agentEnabled;
+            params._lueur_memory = s.memoryEnabled && (model.provider === 'local' || s.memoryCloud);
+          }
+          stream = llmApi.streamBackgroundChat(cfg, params, current.jobId, ctrl.signal, onMeta);
         } else {
+          const history = buildHistory(conv.messages, s);
           // External OpenAI-compatible servers keep the old browser-owned
           // behavior. Remove generationId so a later reload will not try to
           // resume a job that does not exist.
@@ -359,7 +384,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     if (run.current === current) run.current = null;
     setLive(null);
     if (status === 'error' && !error?.http) onConnErrRef.current?.();
-  }, [finalize, patchConv, persist]);
+  }, [finalize, patchConv, persist, setSteps]);
 
   /**
    * Recover a router-owned job after page refresh/browser restart.
@@ -396,6 +421,15 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     let raf = 0;
     let lastCheckpoint = Date.now();
 
+    const onMeta = (meta: LueurMeta) => {
+      if (Array.isArray(meta.steps)) setSteps(cid, message.id, meta.steps);
+      if (typeof meta.replace === 'string') {
+        full = meta.replace;
+        pending = '';
+        setLive({ cid, mid: message.id, content: full });
+      }
+    };
+
     const flush = () => {
       raf = 0;
       if (!pending) return;
@@ -429,7 +463,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
         ...c,
         messages: c.messages.map(m => (
           m.id === message.id
-            ? { ...m, content: full, error: null, metrics } as AssistantMessage
+            ? { ...m, content: full, error: null, metrics, steps: snapshot.steps?.length ? snapshot.steps : (m as AssistantMessage).steps } as AssistantMessage
             : m
         )),
       }));
@@ -459,6 +493,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
         message.generationId,
         snapshot.cursor,
         ctrl.signal,
+        onMeta,
       );
 
       for await (const token of stream) {
@@ -500,7 +535,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       if (run.current === current) run.current = null;
       setLive(null);
     }
-  }, [finalize, patchConv, persist]);
+  }, [finalize, patchConv, persist, setSteps]);
 
   // After IndexedDB is loaded, recover any in-flight router job. Including
   // convs in dependencies lets us move on if more than one stale streaming

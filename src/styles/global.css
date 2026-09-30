@@ -989,3 +989,29 @@ textarea.field { height: auto; resize: vertical; padding: 10px 12px; line-height
   .chart-axis-labels span:nth-child(2),
   .chart-axis-labels span:nth-last-child(2) { display: none; }
 }
+
+/* ---------- Agent steps & memory ---------- */
+.agent-steps { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; }
+.agent-step { border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--muted); min-width: 0; }
+.agent-step summary, .agent-step-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; min-width: 0; list-style: none; }
+.agent-step summary { cursor: pointer; }
+.agent-step summary::-webkit-details-marker { display: none; }
+.agent-step-ico { display: inline-flex; flex-shrink: 0; }
+.agent-step-label { font-weight: 500; color: color-mix(in oklch, var(--text) 75%, var(--muted)); white-space: nowrap; }
+.agent-step-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-step-status { margin-left: auto; display: inline-flex; flex-shrink: 0; }
+.agent-step-status.error { color: var(--bad); }
+.agent-step-status.running { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--muted); animation: agentSpin .8s linear infinite; }
+@keyframes agentSpin { to { transform: rotate(360deg); } }
+.agent-step-body { padding: 0 10px 8px 32px; font-size: 12.5px; }
+.agent-step-body pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11.5px; max-height: 180px; overflow: auto; }
+.agent-step-body ul { margin: 0; padding-left: 16px; }
+.memory-add { display: flex; gap: 8px; margin-bottom: 10px; }
+.memory-add .field { flex: 1; min-width: 0; }
+.memory-add .btn-outline { flex-shrink: 0; }
+.memory-error { color: var(--bad); margin-bottom: 8px; }
+.memory-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; max-height: 320px; overflow: auto; }
+.memory-list li { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; font-size: 14px; }
+.memory-list li + li { border-top: 1px solid var(--line); }
+.memory-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.memory-src { flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--hover); color: var(--muted); }

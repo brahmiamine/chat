@@ -20,6 +20,8 @@ jobs:
       - run: npm run build
       - name: Validate Python router syntax
         run: python3 -m py_compile scripts/model-router.py
+      - name: Router unit tests
+        run: python3 -m unittest discover -s tests
       - name: Lint start script
         run: shellcheck -S warning scripts/start-ai.sh
       - name: Validate Cloudflare Worker syntax

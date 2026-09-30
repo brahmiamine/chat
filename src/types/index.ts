@@ -74,6 +74,21 @@ export interface GenerationMetrics {
   completedAt?: number;
 }
 
+/** One visible step of the router agent: tool call, memory lookup, summary… */
+export interface AgentStep {
+  type: 'tool' | 'memory' | 'context' | 'documents' | 'info';
+  /** Tool name for `tool` steps, e.g. web_search. */
+  name?: string;
+  label: string;
+  /** Tool argument shown to the user (query, URL, expression). */
+  detail?: string;
+  status?: 'running' | 'done' | 'error';
+  /** Start of the tool result. */
+  preview?: string;
+  /** Memories used for `memory` steps. */
+  items?: string[];
+}
+
 export interface AssistantMessage {
   id: string;
   role: 'assistant';
@@ -88,6 +103,8 @@ export interface AssistantMessage {
   generationId?: string;
   /** Runtime/token telemetry. Contains metrics only, never prompt contents. */
   metrics?: GenerationMetrics;
+  /** Agent steps reported by the router (tools, memory, context). */
+  steps?: AgentStep[];
   error?: ChatError | null;
   createdAt: number;
 }
@@ -124,6 +141,29 @@ export interface ChatCompletionParams {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  /** Lueur router: server-side context manager (summary, memory, documents). */
+  _lueur_context?: boolean;
+  _lueur_conversation_id?: string;
+  /** Lueur router: tool-using agent loop. */
+  _lueur_agent?: boolean;
+  /** Lueur router: long-term memory (injection + extraction). */
+  _lueur_memory?: boolean;
+}
+
+/** What the server at baseUrl supports (from GET /health). */
+export interface RouterCapabilities {
+  /** Router-owned generations that survive a closed browser. */
+  background: boolean;
+  /** Agent loop, memory and server-side context manager. */
+  agent: boolean;
+}
+
+export interface MemoryItem {
+  id: number;
+  text: string;
+  source?: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface ProviderConfig {
@@ -191,6 +231,12 @@ export interface Settings extends GenerationSettings {
   systemPrompt: string;
   theme: ThemeMode;
   fontSize: FontSize;
+  /** Let the router agent use tools (web search, page reading, calculator…). */
+  agentEnabled: boolean;
+  /** Long-term memory across conversations. */
+  memoryEnabled: boolean;
+  /** Also send memories to cloud models (they leave the phone). */
+  memoryCloud: boolean;
 }
 
-export type SettingsTab = 'general' | 'model' | 'connection' | 'generation' | 'appearance';
+export type SettingsTab = 'general' | 'model' | 'agent' | 'connection' | 'generation' | 'appearance';

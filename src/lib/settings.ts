@@ -99,6 +99,9 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPrompt: '',
   theme: 'system',
   fontSize: 16,
+  agentEnabled: true,
+  memoryEnabled: true,
+  memoryCloud: false,
   ...GEN_DEFAULTS,
 };
 

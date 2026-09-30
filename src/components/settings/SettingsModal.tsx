@@ -1,9 +1,10 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { HealthStatus, ServerInfo, Settings, SettingsTab } from '../../types';
 import type { TestResult } from '../../hooks/useServerHealth';
-import { ContrastIcon, CpuIcon, GearIcon, PlugIcon, SlidersIcon, XIcon } from '../ui/Icons';
+import { BulbIcon, ContrastIcon, CpuIcon, GearIcon, PlugIcon, SlidersIcon, XIcon } from '../ui/Icons';
 import { GeneralTab } from './GeneralTab';
 import { ModelTab } from './ModelTab';
+import { AgentTab } from './AgentTab';
 import { ConnectionTab } from './ConnectionTab';
 import { GenerationTab } from './GenerationTab';
 import { AppearanceTab } from './AppearanceTab';
@@ -11,6 +12,7 @@ import { AppearanceTab } from './AppearanceTab';
 const TABS: [SettingsTab, string, ReactNode][] = [
   ['general', 'Général', <GearIcon />],
   ['model', 'Modèle', <CpuIcon />],
+  ['agent', 'Agent & mémoire', <BulbIcon />],
   ['connection', 'Connexion', <PlugIcon />],
   ['generation', 'Génération', <SlidersIcon />],
   ['appearance', 'Apparence', <ContrastIcon />],
@@ -58,6 +60,7 @@ export function SettingsModal(props: SettingsModalProps) {
           <div className="settings-body" role="tabpanel" key={tab}>
             {tab === 'general' && <GeneralTab {...props} />}
             {tab === 'model' && <ModelTab {...props} />}
+            {tab === 'agent' && <AgentTab {...props} />}
             {tab === 'connection' && <ConnectionTab {...props} />}
             {tab === 'generation' && <GenerationTab {...props} />}
             {tab === 'appearance' && <AppearanceTab {...props} />}

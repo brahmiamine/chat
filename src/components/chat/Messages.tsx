@@ -1,8 +1,8 @@
 import { lazy, memo, Suspense } from 'react';
-import type { AssistantMessage as AssistantMsg, GenerationMetrics, UserMessage as UserMsg } from '../../types';
+import type { AgentStep, AssistantMessage as AssistantMsg, GenerationMetrics, UserMessage as UserMsg } from '../../types';
 import { splitThink } from '../../lib/chat';
 import { useCopy } from '../../hooks/useCopy';
-import { AlertIcon, CheckIcon, CopyIcon, RefreshIcon, StarIcon, StopIcon } from '../ui/Icons';
+import { AlertIcon, BulbIcon, CheckIcon, CopyIcon, FileTextIcon, RefreshIcon, SearchIcon, StarIcon, StopIcon } from '../ui/Icons';
 import { Tooltip } from '../ui/Tooltip';
 import { AttachmentList } from './Attachments';
 
@@ -62,6 +62,40 @@ function MetricsLine({ metrics }: { metrics?: GenerationMetrics }) {
   return <div className="msg-metrics" title={detail || undefined}>{items.map((x, i) => <span key={i}>{x}</span>)}</div>;
 }
 
+function stepIcon(step: AgentStep) {
+  if (step.type === 'memory' || step.name === 'memory_save' || step.name === 'memory_search') return <BulbIcon size={14} />;
+  if (step.type === 'documents' || step.name === 'fetch_url' || step.name === 'document_search') return <FileTextIcon size={14} />;
+  if (step.type === 'context') return <RefreshIcon size={14} />;
+  return <SearchIcon size={14} />;
+}
+
+/** Tools, memories and summaries used by the router agent for this answer. */
+function AgentSteps({ steps }: { steps?: AgentStep[] }) {
+  if (!steps?.length) return null;
+  return (
+    <div className="agent-steps">
+      {steps.map((step, i) => {
+        const body = step.items?.length
+          ? <ul>{step.items.map((item, j) => <li key={j}>{item}</li>)}</ul>
+          : step.preview ? <pre>{step.preview}</pre> : null;
+        const head = (
+          <>
+            <span className="agent-step-ico">{stepIcon(step)}</span>
+            <span className="agent-step-label">{step.label}</span>
+            {step.detail && <span className="agent-step-detail">{step.detail}</span>}
+            <span className={`agent-step-status ${step.status || 'done'}`} aria-label={step.status === 'running' ? 'En cours' : step.status === 'error' ? 'Erreur' : 'Terminé'}>
+              {step.status === 'error' ? <AlertIcon size={13} /> : step.status === 'running' ? null : <CheckIcon size={13} />}
+            </span>
+          </>
+        );
+        return body
+          ? <details key={i} className="agent-step"><summary>{head}</summary><div className="agent-step-body">{body}</div></details>
+          : <div key={i} className="agent-step"><div className="agent-step-head">{head}</div></div>;
+      })}
+    </div>
+  );
+}
+
 export const UserMessage = memo(function UserMessage({ message }: { message: UserMsg }) {
   const { copied, copy } = useCopy();
   return (
@@ -110,6 +144,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <span className={`avatar${streaming ? ' live' : ''}`}><StarIcon size={12} /></span>
         <span className="who">{message.author || fallbackAuthor || 'Assistant'}</span>
       </div>
+      <AgentSteps steps={message.steps} />
       {hasText && (
         <div className="msg-body">
           <Suspense fallback={<PlainText text={text} />}><Markdown text={text} /></Suspense>

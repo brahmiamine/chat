@@ -46,6 +46,14 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 #   export LUEUR_CLOUD_UNLOAD=0      # 1 = décharger le modèle local dès qu'un modèle cloud sert
 #   export LUEUR_SUPERVISE=1         # 0 = pas de relance automatique
 #
+# Agent (outils, mémoire long terme, résumés, documents) :
+#   export LUEUR_SEARXNG_URL='http://...'  # instance SearXNG (sinon DuckDuckGo puis Wikipedia)
+#   export LUEUR_EMBED=1             # 0 = pas de modèle d'embeddings (recherche par mots-clés)
+#   export LUEUR_EMBED_THREADS=2     # cœurs CPU pour les embeddings (le chat reste sur le NPU)
+#   export LUEUR_EMBED_BIN=~/llama.cpp/build/bin/llama-server  # build CPU pour les embeddings
+#   export LUEUR_AGENT_MAX_STEPS=6   # appels d'outils maximum par réponse
+#   export LUEUR_JINJA=1             # 0 si ton build llama.cpp ne connaît pas --jinja
+#
 # Fournisseurs cloud (ajoutez uniquement ceux que vous utilisez) :
 #   export GROQ_API_KEY='...'
 #   export GEMINI_API_KEY='...'
@@ -359,7 +367,9 @@ d=json.load(sys.stdin)
 print("✅ Router actif")
 print("   Modèle local chargé :", d.get("active_model") or "aucun")
 if d.get("loading_model"):
-    print("   Chargement en cours :", d["loading_model"])'
+    print("   Chargement en cours :", d["loading_model"])
+if d.get("agent"):
+    print("   Agent : recherche", d.get("search"), "· embeddings", d.get("embeddings"))'
   else
     echo "❌ Router indisponible"
   fi
@@ -569,6 +579,7 @@ echo "   Configuration : $ENV_FILE"
 echo
 echo "💾 Un seul modèle local NPU est chargé à la fois ; déchargé après ${LUEUR_IDLE_UNLOAD}s d'inactivité."
 echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
+echo "🧠 Agent : outils, mémoire long terme (~/.lueur/lueur.db) et embeddings CPU (~0,8 Go, LUEUR_EMBED=0 pour désactiver)."
 if [ "$LUEUR_SUPERVISE" = "1" ]; then
   echo "🛡️ Superviseur actif : router et tunnel relancés automatiquement."
 fi
@@ -601,6 +612,7 @@ echo "🛠️ ngrok UI : http://127.0.0.1:4040"
 echo
 echo "Logs router : tail -f $ROUTER_LOG"
 echo "Logs modèle : tail -f $MODEL_LOG"
+echo "Logs embeddings : tail -f $HOME/llama-embed.log"
 echo "Téléchargements : tail -f $DOWNLOAD_LOG"
 echo "Pré-téléchargement : tail -f $PREFETCH_LOG"
 echo "Logs tunnel : tail -f $TUNNEL_LOG"
