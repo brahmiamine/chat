@@ -142,22 +142,22 @@ MODELS: dict[str, dict[str, object]] = {
         "url": "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_0.gguf",
         "ubatch": 1024,
     },
-    "local::gemma3-12b-q4_0": {
-        "label": "Gemma 3 12B · Snapdragon NPU",
+    "local::qwen3.5-9b-q4_0": {
+        "label": "Qwen3.5 9B · Snapdragon NPU",
         "provider": "local",
         "vision": False,
-        "filename": "google_gemma-3-12b-it-Q4_0.gguf",
-        "url": "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_0.gguf",
+        "filename": "Qwen_Qwen3.5-9B-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/main/Qwen_Qwen3.5-9B-Q4_0.gguf",
         "ubatch": 512,
     },
-    "local::deepseek-r1-qwen-14b-q4_0": {
-        "label": "DeepSeek R1 Qwen 14B · Snapdragon NPU",
+    "local::deepseek-r1-qwen-7b-q4_0": {
+        "label": "DeepSeek R1 Qwen 7B · Snapdragon NPU",
         "provider": "local",
         "vision": False,
         "thinking": True,
-        "filename": "DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf",
-        "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf",
-        "ubatch": 512,
+        "filename": "DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf",
+        "ubatch": 1024,
     },
 
     # Cloud models. Prefixing the id avoids collisions between providers.
@@ -268,6 +268,8 @@ MODELS: dict[str, dict[str, object]] = {
 }
 
 MODEL_ALIASES = {
+    "local::gemma3-12b-q4_0": "local::qwen3.5-9b-q4_0",
+    "local::deepseek-r1-qwen-14b-q4_0": "local::deepseek-r1-qwen-7b-q4_0",
     "nvidia::openai/gpt-oss-120b": "nvidia::openai/gpt-oss-20b",
     "nvidia::deepseek-ai/deepseek-v4-flash": "nvidia::deepseek-ai/deepseek-v4.1-flash",
     "nvidia::qwen/qwen3-next-80b-a3b-instruct": "nvidia::z-ai/glm-5.3",
