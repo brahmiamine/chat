@@ -5,7 +5,7 @@
  * resumable background generations. Those jobs are owned by the router, so a
  * browser/tab disconnect does not cancel llama.cpp.
  */
-import type { ChatCompletionParams, HealthStatus, ProviderConfig, ServerInfo } from '../types';
+import type { ChatCompletionParams, GenerationMetrics, HealthStatus, ProviderConfig, ServerInfo, TokenCountSource } from '../types';
 
 /** The response had started, then the connection dropped mid-stream (not a CORS issue). */
 export class StreamInterruptedError extends Error {
@@ -24,6 +24,29 @@ export class LLMApiError extends Error {
   }
 }
 
+interface RouterGenerationMetrics {
+  provider?: string;
+  provider_label?: string;
+  model_id?: string;
+  resolved_model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  token_count_source?: TokenCountSource;
+  ttft_ms?: number | null;
+  duration_ms?: number | null;
+  generation_ms?: number | null;
+  tokens_per_second?: number | null;
+  queue_ms?: number | null;
+  context_limit?: number | null;
+  finish_reason?: string | null;
+  cost_usd?: number | null;
+  reconnects?: number;
+  http_status?: number | null;
+  started_at?: number;
+  completed_at?: number | null;
+}
+
 export interface BackgroundGeneration {
   id: string;
   status: 'running' | 'done' | 'stopped' | 'error';
@@ -32,6 +55,34 @@ export interface BackgroundGeneration {
   error?: string | null;
   error_code?: number | null;
   updated_at?: number;
+  metrics?: RouterGenerationMetrics;
+}
+
+export function generationMetrics(snapshot: BackgroundGeneration): GenerationMetrics | undefined {
+  const m = snapshot.metrics;
+  if (!m?.provider || !m.model_id) return undefined;
+  return {
+    provider: m.provider,
+    providerLabel: m.provider_label,
+    modelId: m.model_id,
+    resolvedModel: m.resolved_model,
+    inputTokens: m.input_tokens,
+    outputTokens: m.output_tokens,
+    totalTokens: m.total_tokens,
+    tokenCountSource: m.token_count_source,
+    ttftMs: m.ttft_ms ?? undefined,
+    durationMs: m.duration_ms ?? undefined,
+    generationMs: m.generation_ms ?? undefined,
+    tokensPerSecond: m.tokens_per_second ?? undefined,
+    queueMs: m.queue_ms ?? undefined,
+    contextLimit: m.context_limit ?? undefined,
+    finishReason: m.finish_reason ?? undefined,
+    costUsd: m.cost_usd,
+    reconnects: m.reconnects,
+    httpStatus: m.http_status ?? undefined,
+    startedAt: m.started_at,
+    completedAt: m.completed_at ?? undefined,
+  };
 }
 
 /** Server root: tolerates a pasted `/v1` or full `/v1/chat/completions` endpoint. */

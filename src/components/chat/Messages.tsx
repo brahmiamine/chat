@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense } from 'react';
-import type { AssistantMessage as AssistantMsg, UserMessage as UserMsg } from '../../types';
+import type { AssistantMessage as AssistantMsg, GenerationMetrics, UserMessage as UserMsg } from '../../types';
 import { splitThink } from '../../lib/chat';
 import { useCopy } from '../../hooks/useCopy';
 import { AlertIcon, CheckIcon, CopyIcon, RefreshIcon, StarIcon, StopIcon } from '../ui/Icons';
@@ -20,6 +20,46 @@ export function TypingDots({ label }: { label?: string }) {
       {label && <span className="typing-label">{label}</span>}
     </div>
   );
+}
+
+function compactMs(ms?: number) {
+  if (typeof ms !== 'number') return null;
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
+}
+
+function MetricsLine({ metrics }: { metrics?: GenerationMetrics }) {
+  if (!metrics) return null;
+  const estimated = metrics.tokenCountSource === 'estimated';
+  const items: string[] = [];
+  if (metrics.providerLabel) items.push(metrics.providerLabel);
+  if (typeof metrics.inputTokens === 'number' || typeof metrics.outputTokens === 'number') {
+    const input = metrics.inputTokens ?? 0;
+    const output = metrics.outputTokens ?? 0;
+    items.push(`${estimated ? '≈' : ''}${input.toLocaleString('fr-FR')} in · ${output.toLocaleString('fr-FR')} out`);
+  } else if (typeof metrics.totalTokens === 'number') {
+    items.push(`${estimated ? '≈' : ''}${metrics.totalTokens.toLocaleString('fr-FR')} tokens`);
+  }
+  if (typeof metrics.tokensPerSecond === 'number') items.push(`${metrics.tokensPerSecond.toFixed(1)} tok/s`);
+  const ttft = compactMs(metrics.ttftMs);
+  if (ttft) items.push(`TTFT ${ttft}`);
+  const dur = compactMs(metrics.durationMs);
+  if (dur) items.push(dur);
+  if (metrics.contextLimit && metrics.inputTokens != null) {
+    items.push(`ctx ${metrics.inputTokens.toLocaleString('fr-FR')}/${metrics.contextLimit.toLocaleString('fr-FR')}`);
+  }
+  if (metrics.reconnects) items.push(`${metrics.reconnects} reconnexion${metrics.reconnects > 1 ? 's' : ''}`);
+  if (typeof metrics.costUsd === 'number') {
+    items.push(metrics.costUsd === 0 ? '0 USD' : metrics.costUsd.toFixed(4) + ' USD');
+  }
+
+  const detail = [
+    metrics.resolvedModel && `Modèle: ${metrics.resolvedModel}`,
+    metrics.finishReason && `Arrêt: ${metrics.finishReason}`,
+    metrics.queueMs != null && `File: ${compactMs(metrics.queueMs)}`,
+    estimated && 'Tokens estimés (le fournisseur n’a pas renvoyé de comptage exact)',
+  ].filter(Boolean).join(' · ');
+
+  return <div className="msg-metrics" title={detail || undefined}>{items.map((x, i) => <span key={i}>{x}</span>)}</div>;
 }
 
 export const UserMessage = memo(function UserMessage({ message }: { message: UserMsg }) {
@@ -98,6 +138,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </div>
         </div>
       )}
+      {!streaming && <MetricsLine metrics={message.metrics} />}
       {showActions && (
         <div className="msg-actions">
           <Tooltip label={copied ? 'Copié' : 'Copier'}>

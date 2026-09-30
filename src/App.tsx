@@ -11,6 +11,7 @@ import { ChatHeader } from './components/chat/ChatHeader';
 import { ChatView, type ChatViewHandle } from './components/chat/ChatView';
 import { SearchDialog } from './components/search/SearchDialog';
 import { SettingsModal } from './components/settings/SettingsModal';
+import { StatisticsModal } from './components/statistics/StatisticsModal';
 import { PreviewProvider } from './components/ui/Lightbox';
 
 const COLLAPSED_KEY = 'lueur.collapsed';
@@ -26,6 +27,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { return false; } });
   const [drawer, setDrawer] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const view = useRef<ChatViewHandle>(null);
 
@@ -53,11 +55,23 @@ export default function App() {
     setSearchOpen(false);
   }, [setActiveId]);
 
-  const openSearch = useCallback(() => { setDrawer(false); setSearchOpen(true); }, []);
+  const openSearch = useCallback(() => {
+    setDrawer(false);
+    setStatsOpen(false);
+    setSearchOpen(true);
+  }, []);
+  const openStatistics = useCallback(() => {
+    setDrawer(false);
+    setSearchOpen(false);
+    setSettingsTab(null);
+    setStatsOpen(true);
+  }, []);
   const lastTab = useRef<SettingsTab>('connection');
   if (settingsTab) lastTab.current = settingsTab;
   const openSettings = useCallback((tab?: SettingsTab) => {
     setDrawer(false);
+    setSearchOpen(false);
+    setStatsOpen(false);
     setSettingsTab(tab || lastTab.current);
   }, []);
   const openSettingsDefault = useCallback(() => openSettings(), [openSettings]);
@@ -72,8 +86,8 @@ export default function App() {
   useEffect(() => { focusComposer(); }, [focusComposer]);
 
   // Global shortcuts.
-  const state = useRef({ searchOpen, settingsTab, drawer, generating: chat.generating });
-  state.current = { searchOpen, settingsTab, drawer, generating: chat.generating };
+  const state = useRef({ searchOpen, statsOpen, settingsTab, drawer, generating: chat.generating });
+  state.current = { searchOpen, statsOpen, settingsTab, drawer, generating: chat.generating };
   const { stop } = chat;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -84,6 +98,7 @@ export default function App() {
       if (k === 'escape') {
         const s = state.current;
         if (s.searchOpen) setSearchOpen(false);
+        else if (s.statsOpen) setStatsOpen(false);
         else if (s.settingsTab) setSettingsTab(null);
         else if (s.drawer) setDrawer(false);
         else if (s.generating) stop();
@@ -109,6 +124,7 @@ export default function App() {
           onCloseDrawer={() => setDrawer(false)}
           onNewChat={newChat}
           onOpenSearch={openSearch}
+          onOpenStatistics={openStatistics}
           onOpenSettings={openSettingsDefault}
           onSelect={openConversation}
           onRename={chat.rename}
@@ -144,6 +160,7 @@ export default function App() {
         </main>
 
         {searchOpen && <SearchDialog conversations={chat.conversations} onOpen={openConversation} onClose={() => setSearchOpen(false)} />}
+        {statsOpen && <StatisticsModal conversations={chat.conversations} onClose={() => setStatsOpen(false)} />}
 
         {settingsTab && (
           <SettingsModal

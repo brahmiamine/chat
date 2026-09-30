@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { prettyModel } from '../../lib/settings';
-import { PlusIcon, RefreshIcon, TrashIcon } from '../ui/Icons';
+import { ChevronIcon, PlusIcon, RefreshIcon, TrashIcon } from '../ui/Icons';
 import type { ModelEntry, ModelProviderId } from '../../types';
 import type { SettingsModalProps } from './SettingsModal';
 
@@ -21,6 +21,23 @@ function technicalId(id: string) {
 export function ModelTab({ settings: s, update, loadServerInfo, server }: SettingsModalProps) {
   const [newId, setNewId] = useState('');
   const [importing, setImporting] = useState<string | null>(null);
+  const selectedProvider = s.models.find(m => m.id === s.modelId)?.provider || inferredProvider(s.modelId);
+  const [openProvider, setOpenProvider] = useState<string>(selectedProvider);
+
+  useEffect(() => { setOpenProvider(selectedProvider); }, [selectedProvider]);
+
+  const groups = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
+    for (const model of s.models) {
+      const provider = model.provider || inferredProvider(model.id);
+      const state = server.providers?.[provider];
+      const label = model.providerLabel || state?.label || (provider === 'custom' ? 'Personnalisé' : provider);
+      const current = map.get(provider);
+      if (current) current.models.push(model);
+      else map.set(provider, { id: provider, label, models: [model] });
+    }
+    return [...map.values()];
+  }, [s.models, server.providers]);
 
   const addModel = () => {
     const id = newId.trim();
@@ -57,43 +74,69 @@ export function ModelTab({ settings: s, update, loadServerInfo, server }: Settin
           Les modèles locaux tournent sur le téléphone. Les modèles cloud passent par le router Termux :
           les clés restent dans <code>~/.lueur.env</code>, jamais dans le navigateur.
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 12 }}>
-          {s.models.map(m => {
-            const on = m.id === s.modelId;
-            const provider = m.provider || inferredProvider(m.id);
-            const state = server.providers?.[provider];
-            const providerName = m.providerLabel || state?.label || (provider === 'custom' ? 'Personnalisé' : provider);
-            const readiness = provider === 'local'
-              ? 'prêt'
-              : state
-                ? (state.configured ? 'configuré' : 'clé requise')
-                : 'cloud';
-
+        <div className="settings-provider-groups">
+          {groups.map(group => {
+            const expanded = openProvider === group.id;
+            const state = server.providers?.[group.id];
+            const configured = group.id === 'local' || group.id === 'custom' || state?.configured;
+            const selected = group.models.some(m => m.id === s.modelId);
             return (
-              <div key={m.id} className={`model-row${on ? ' on' : ''}`}>
-                <button className="pick" aria-label="Utiliser ce modèle" onClick={() => update({ modelId: m.id })}>
-                  <span className={`radio${on ? ' on' : ''}`} />
+              <div className={`settings-provider-group${expanded ? ' open' : ''}`} key={group.id}>
+                <button
+                  className={`settings-provider-head ghost${selected ? ' selected' : ''}`}
+                  aria-expanded={expanded}
+                  onClick={() => setOpenProvider(v => v === group.id ? '' : group.id)}
+                >
+                  <span className="provider-title">{group.label}</span>
+                  <span className={`provider-state${configured ? ' ready' : ''}`}>
+                    {group.id === 'local' ? 'local' : configured ? 'configuré' : 'clé requise'}
+                  </span>
+                  <span className="provider-count">{group.models.length}</span>
+                  <span className="provider-arrow"><ChevronIcon size={14} /></span>
                 </button>
-                <div className="info">
-                  <input
-                    value={m.label}
-                    aria-label="Nom affiché"
-                    placeholder={prettyModel(m.id)}
-                    onChange={e => update({ models: s.models.map(x => (x.id === m.id ? { ...x, label: e.target.value } : x)) })}
-                  />
-                  <div className="id">{providerName} · {readiness} · {technicalId(m.id)}</div>
-                </div>
-                {s.models.length > 1 && (
-                  <button
-                    className="rm icon-btn ghost"
-                    aria-label={`Retirer ${m.label || m.id}`}
-                    onClick={() => {
-                      const rest = s.models.filter(x => x.id !== m.id);
-                      update({ models: rest, modelId: s.modelId === m.id ? rest[0].id : s.modelId });
-                    }}
-                  >
-                    <TrashIcon size={15} />
-                  </button>
+
+                {expanded && (
+                  <div className="settings-provider-models">
+                    {group.models.map(m => {
+                      const on = m.id === s.modelId;
+                      const provider = m.provider || inferredProvider(m.id);
+                      const providerState = server.providers?.[provider];
+                      const readiness = provider === 'local'
+                        ? 'prêt'
+                        : providerState
+                          ? (providerState.configured ? 'configuré' : 'clé requise')
+                          : 'cloud';
+
+                      return (
+                        <div key={m.id} className={`model-row${on ? ' on' : ''}`}>
+                          <button className="pick" aria-label="Utiliser ce modèle" onClick={() => update({ modelId: m.id })}>
+                            <span className={`radio${on ? ' on' : ''}`} />
+                          </button>
+                          <div className="info">
+                            <input
+                              value={m.label}
+                              aria-label="Nom affiché"
+                              placeholder={prettyModel(m.id)}
+                              onChange={e => update({ models: s.models.map(x => (x.id === m.id ? { ...x, label: e.target.value } : x)) })}
+                            />
+                            <div className="id">{readiness} · {technicalId(m.id)}</div>
+                          </div>
+                          {s.models.length > 1 && (
+                            <button
+                              className="rm icon-btn ghost"
+                              aria-label={`Retirer ${m.label || m.id}`}
+                              onClick={() => {
+                                const rest = s.models.filter(x => x.id !== m.id);
+                                update({ models: rest, modelId: s.modelId === m.id ? rest[0].id : s.modelId });
+                              }}
+                            >
+                              <TrashIcon size={15} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             );
