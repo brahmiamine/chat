@@ -384,11 +384,10 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
         return;
       }
       if (snapshot.status === 'error') {
-        const diagnosed = await diagnoseError(
-          new Error(snapshot.error || 'Background generation failed'),
-          s.baseUrl,
-          null,
-        );
+        const sourceError = snapshot.error_code
+          ? new LLMApiError(snapshot.error_code, snapshot.error || 'Background generation failed')
+          : new Error(snapshot.error || 'Background generation failed');
+        const diagnosed = await diagnoseError(sourceError, s.baseUrl, null);
         finalize(cid, message.id, full, 'error', diagnosed);
         return;
       }
