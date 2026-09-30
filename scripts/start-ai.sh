@@ -3,7 +3,7 @@
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
 # Le router Python garde un seul modèle GGUF local en RAM à la fois et peut
-# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, Cerebras, HF,
+# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, HF,
 # NVIDIA NIM, Cohere et Vercel AI Gateway.
 #
 # Usage :
@@ -34,7 +34,6 @@ ENV_FILE="$HOME/.lueur.env"
 #   export GEMINI_API_KEY='...'
 #   export MISTRAL_API_KEY='...'
 #   export OPENROUTER_API_KEY='...'
-#   export CEREBRAS_API_KEY='...'
 #   export HF_TOKEN='...'
 #   export NVIDIA_API_KEY='...'
 #   export COHERE_API_KEY='...'
@@ -205,7 +204,6 @@ else
     GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
     MISTRAL_API_KEY="${MISTRAL_API_KEY:-}" \
     OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
-    CEREBRAS_API_KEY="${CEREBRAS_API_KEY:-}" \
     HF_TOKEN="${HF_TOKEN:-}" \
     NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
     COHERE_API_KEY="${COHERE_API_KEY:-}" \
@@ -314,7 +312,6 @@ echo "   ✨ Gemini      : Gemini 3.8 Flash"
 echo "   🇫🇷 Mistral    : Mistral Small"
 echo "   🌐 OpenRouter  : Free Router"
 echo "   ☁️ Workers AI  : GPT-OSS 120B"
-echo "   🚀 Cerebras    : GPT-OSS 120B"
 echo "   🤗 HuggingFace : DeepSeek R1"
 echo "   🟢 NVIDIA NIM  : DeepSeek V4.1 Flash, GLM-5.3, GLM-5.3 Flash"
 echo "                    Nemotron 3.5 Lightning, Nemotron 3 Super 120B"
@@ -331,7 +328,6 @@ PROVIDER_COUNT=0
 [ -n "${GEMINI_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${MISTRAL_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${OPENROUTER_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${CEREBRAS_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${HF_TOKEN:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${NVIDIA_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${COHERE_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
@@ -339,7 +335,7 @@ PROVIDER_COUNT=0
 if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] && [ -n "${CLOUDFLARE_AI_API_TOKEN:-}" ]; then
   PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 fi
-echo "🔐 Fournisseurs cloud configurés : $PROVIDER_COUNT/10"
+echo "🔐 Fournisseurs cloud configurés : $PROVIDER_COUNT/9"
 echo "   Configuration : $ENV_FILE"
 echo
 
