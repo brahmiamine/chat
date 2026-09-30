@@ -65,38 +65,8 @@ const PROVIDERS = {
 };
 
 const MODELS = {
-  'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M': {
-    label: 'Qwen3.5 4B Vision',
-    provider: 'local',
-    vision: true,
-  },
-  'ggml-org/gemma-3-4b-it-GGUF:Q4_K_M': {
-    label: 'Gemma 3 4B Vision',
-    provider: 'local',
-    vision: true,
-  },
-  'bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M': {
-    label: 'Phi-4 Mini 3.8B',
-    provider: 'local',
-    vision: false,
-  },
-  'bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M': {
-    label: 'Llama 3.2 3B',
-    provider: 'local',
-    vision: false,
-  },
-  'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M': {
-    label: 'SmolLM3 3B',
-    provider: 'local',
-    vision: false,
-  },
-  'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M': {
-    label: 'DeepSeek R1 1.5B',
-    provider: 'local',
-    vision: false,
-  },
-  'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M': {
-    label: 'Qwen2.5 Coder 3B',
+  'local::qwen2.5-7b-instruct-q4_0': {
+    label: 'Qwen2.5 7B · Snapdragon NPU',
     provider: 'local',
     vision: false,
   },
