@@ -60,8 +60,9 @@ export const DEFAULT_MODELS: ModelEntry[] = [
 export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 1024, contextSize: 4096 };
 
 /**
- * When the app is served by llama-server itself (`llama-server --path dist`),
- * the API lives on the same origin: no CORS, and no URL to configure even when
+ * When the app is served by llama-server itself (`llama-server --path dist`)
+ * or by the Cloudflare Worker (chat.testcivique.workers.dev), the API lives on
+ * the same origin: no CORS, and no URL to configure even when
  * the tunnel address changes. GitHub Pages and the Vite dev/preview servers
  * keep the configured remote default.
  */

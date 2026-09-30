@@ -318,14 +318,16 @@ Les modèles texte supplémentaires sont chargés à la demande par le router :
 Le premier appel à un modèle non encore présent dans le cache déclenche son téléchargement. Un seul modèle est chargé en RAM à la fois.
 
 
-## Backend Cloudflare Worker pour GitHub Pages
+## Cloudflare Worker : application + API
 
-GitHub Pages utilise désormais le Worker Cloudflare comme API par défaut :
+L’adresse principale de Lueur est **https://chat.testcivique.workers.dev/**.
+Le Worker sert à la fois l’application (build Vite dans `dist/`, via Workers Static Assets)
+et l’API sur la même origine, donc sans CORS ni URL à configurer.
+GitHub Pages (`https://brahmiamine.github.io/chat/`) reste disponible et utilise ce même Worker comme API.
 
 ```text
-https://brahmiamine.github.io/chat/
-        ↓
-https://chat.testcivique.workers.dev
+https://chat.testcivique.workers.dev/      → application Lueur (dist/)
+https://chat.testcivique.workers.dev/v1/…  → API
         ├── Groq / Gemini / Mistral / OpenRouter
         ├── Cloudflare Workers AI / Hugging Face
         ├── NVIDIA NIM / Cohere / Vercel AI Gateway
@@ -333,7 +335,10 @@ https://chat.testcivique.workers.dev
 ```
 
 Le Worker se trouve dans `worker/index.js` et son déploiement est décrit par `wrangler.jsonc`.
-Le projet Cloudflare connecté au dépôt peut utiliser le déploiement par défaut `npx wrangler deploy`.
+Le projet Cloudflare connecté au dépôt peut utiliser le déploiement par défaut `npx wrangler deploy` :
+`wrangler.jsonc` lance `npm run build` avant chaque déploiement et publie `dist/` comme assets.
+Seules les routes API (`/api`, `/health`, `/providers`, `/models`, `/props`, `/v1/*`) exécutent le script ;
+tout le reste est servi comme fichier statique, avec `index.html` en repli.
 `keep_vars: true` conserve les variables créées dans le dashboard lors des déploiements Wrangler. Les secrets Cloudflare sont également conservés par Wrangler.
 
 Variables non sensibles à configurer dans **Workers & Pages → chat → Settings → Variables and secrets** :
@@ -360,6 +365,7 @@ CLOUDFLARE_AI_API_TOKEN
 Le Worker expose :
 
 ```text
+GET  /api
 GET  /health
 GET  /providers
 GET  /models
@@ -368,7 +374,7 @@ GET  /props
 POST /v1/chat/completions
 ```
 
-Le CORS autorise par défaut `https://brahmiamine.github.io` ainsi que localhost pour le développement.
+Le CORS autorise par défaut la propre origine du Worker, `https://brahmiamine.github.io` ainsi que localhost pour le développement.
 Des origines supplémentaires peuvent être ajoutées avec la variable `LUEUR_ALLOWED_ORIGIN` (liste séparée par des virgules).
 
 Par défaut, les POST sans en-tête `Origin` sont refusés afin d'éviter de transformer le Worker en proxy totalement ouvert.

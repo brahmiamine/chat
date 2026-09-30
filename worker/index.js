@@ -228,6 +228,8 @@ function allowedOrigins(env) {
 function requestOrigin(request, env) {
   const origin = request.headers.get('Origin');
   if (!origin) return '';
+  // The Worker also serves the Lueur app itself, so its own origin is trusted.
+  if (origin === new URL(request.url).origin) return origin;
   return allowedOrigins(env).has(origin) ? origin : null;
 }
 
@@ -457,7 +459,8 @@ export default {
       });
     }
 
-    if (request.method === 'GET' && url.pathname === '/') {
+    // `/` serves the Lueur app from static assets; this JSON summary moved here.
+    if (request.method === 'GET' && url.pathname === '/api') {
       return json({
         name: 'Lueur Cloud Router',
         status: 'ok',
@@ -505,13 +508,14 @@ export default {
       if (!origin && clean(env.LUEUR_ALLOW_DIRECT) !== '1') {
         return json({
           error: {
-            message: 'Requête directe refusée. Utilise Lueur depuis https://brahmiamine.github.io/chat/.',
+            message: 'Requête directe refusée. Utilise Lueur depuis https://chat.testcivique.workers.dev/.',
           },
         }, 403, '');
       }
       return proxyChat(request, env, origin);
     }
 
+    if (env.ASSETS && request.method === 'GET') return env.ASSETS.fetch(request);
     return json({ error: { message: 'Not found' } }, 404, origin);
   },
 };

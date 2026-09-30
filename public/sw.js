@@ -1,4 +1,4 @@
-const CACHE = 'lueur-shell-v2';
+const CACHE = 'lueur-shell-v3';
 
 const SHELL = [
   './',
@@ -38,7 +38,10 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
 
   // Never cache the local/OpenAI-compatible API or health status.
-  if (url.origin === self.location.origin && (url.pathname.includes('/v1/') || url.pathname.endsWith('/health'))) {
+  if (url.origin === self.location.origin && (
+    url.pathname.includes('/v1/')
+    || /\/(health|providers|models|props|api)$/.test(url.pathname)
+  )) {
     return;
   }
 

@@ -3,6 +3,26 @@
   "main": "worker/index.js",
   "compatibility_date": "2026-09-30",
   "keep_vars": true,
+  // Build the Lueur frontend before each deploy so the Worker serves it too.
+  "build": {
+    "command": "npm run build"
+  },
+  // The Lueur app (Vite build) is served from the Worker's own origin.
+  // Only the API routes run the Worker script; everything else is a static file,
+  // with index.html as the fallback for client-side routes.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api",
+      "/health",
+      "/providers",
+      "/models",
+      "/props",
+      "/v1/*"
+    ]
+  },
   "observability": {
     "enabled": true
   }
