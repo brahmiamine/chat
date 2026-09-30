@@ -316,3 +316,68 @@ Les modèles texte supplémentaires sont chargés à la demande par le router :
 - `bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M`
 
 Le premier appel à un modèle non encore présent dans le cache déclenche son téléchargement. Un seul modèle est chargé en RAM à la fois.
+
+
+## Backend Cloudflare Worker pour GitHub Pages
+
+GitHub Pages utilise désormais le Worker Cloudflare comme API par défaut :
+
+```text
+https://brahmiamine.github.io/chat/
+        ↓
+https://chat.testcivique.workers.dev
+        ├── Groq / Gemini / Mistral / OpenRouter
+        ├── Cloudflare Workers AI / Hugging Face
+        ├── NVIDIA NIM / Cohere / Vercel AI Gateway
+        └── LUEUR_LOCAL_URL → ngrok → Termux → llama.cpp
+```
+
+Le Worker se trouve dans `worker/index.js` et son déploiement est décrit par `wrangler.jsonc`.
+Le projet Cloudflare connecté au dépôt peut utiliser le déploiement par défaut `npx wrangler deploy`.
+`keep_vars: true` conserve les variables créées dans le dashboard lors des déploiements Wrangler. Les secrets Cloudflare sont également conservés par Wrangler.
+
+Variables non sensibles à configurer dans **Workers & Pages → chat → Settings → Variables and secrets** :
+
+```text
+CLOUDFLARE_ACCOUNT_ID
+LUEUR_LOCAL_URL=https://expansile-ramiro-intertribal.ngrok-free.dev
+```
+
+Secrets à configurer comme **Secret** et jamais comme variable publique Vite :
+
+```text
+GROQ_API_KEY
+GEMINI_API_KEY
+MISTRAL_API_KEY
+OPENROUTER_API_KEY
+HF_TOKEN
+NVIDIA_API_KEY
+COHERE_API_KEY
+AI_GATEWAY_API_KEY
+CLOUDFLARE_AI_API_TOKEN
+```
+
+Le Worker expose :
+
+```text
+GET  /health
+GET  /providers
+GET  /models
+GET  /v1/models
+GET  /props
+POST /v1/chat/completions
+```
+
+Le CORS autorise par défaut `https://brahmiamine.github.io` ainsi que localhost pour le développement.
+Des origines supplémentaires peuvent être ajoutées avec la variable `LUEUR_ALLOWED_ORIGIN` (liste séparée par des virgules).
+
+Par défaut, les POST sans en-tête `Origin` sont refusés afin d'éviter de transformer le Worker en proxy totalement ouvert.
+Pour un test ponctuel avec curl, ajoutez par exemple :
+
+```bash
+-H 'Origin: https://brahmiamine.github.io'
+```
+
+ou définissez temporairement `LUEUR_ALLOW_DIRECT=1`. Cette protection limite les abus simples mais ne remplace pas une authentification forte ; pour une application privée, ajoutez Cloudflare Access.
+
+Quand Lueur est ouverte directement via ngrok, elle continue d'utiliser le router Termux en same-origin. Quand elle est ouverte depuis GitHub Pages, elle utilise le Worker Cloudflare.
