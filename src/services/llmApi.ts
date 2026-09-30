@@ -1,10 +1,9 @@
 /**
  * OpenAI-compatible LLM client.
  *
- * This is the only module that talks to the model server. It speaks the
- * OpenAI Chat Completions protocol (`POST /v1/chat/completions` with SSE
- * streaming), so llama.cpp can be swapped for OpenAI, Ollama, vLLM, LM Studio,
- * LiteLLM… by changing the base URL / key in the settings — nothing else.
+ * Besides normal OpenAI SSE streaming, Lueur's local Termux router exposes
+ * resumable background generations. Those jobs are owned by the router, so a
+ * browser/tab disconnect does not cancel llama.cpp.
  */
 import type { ChatCompletionParams, HealthStatus, ProviderConfig, ServerInfo } from '../types';
 
@@ -25,6 +24,15 @@ export class LLMApiError extends Error {
   }
 }
 
+export interface BackgroundGeneration {
+  id: string;
+  status: 'running' | 'done' | 'stopped' | 'error';
+  content: string;
+  cursor: number;
+  error?: string | null;
+  updated_at?: number;
+}
+
 /** Server root: tolerates a pasted `/v1` or full `/v1/chat/completions` endpoint. */
 export function normalizeBaseUrl(url: string): string {
   return String(url || '').trim().replace(/\/+$/, '').replace(/\/v1(\/chat\/completions)?$/, '');
@@ -43,6 +51,16 @@ function timeoutSignal(ms: number, outer?: AbortSignal): AbortSignal {
   return outer && 'any' in AbortSignal ? AbortSignal.any([t, outer]) : t;
 }
 
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  await new Promise<void>(resolve => window.setTimeout(resolve, ms));
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+}
+
 async function readErrorMessage(res: Response): Promise<string> {
   try {
     const j = await res.json();
@@ -53,6 +71,72 @@ async function readErrorMessage(res: Response): Promise<string> {
   }
 }
 
+/** Parse an OpenAI-compatible SSE response into visible content deltas. */
+async function* parseSse(
+  res: Response,
+  signal: AbortSignal,
+  strictDone = false,
+): AsyncGenerator<string, void, void> {
+  if (!res.body) throw new LLMApiError(res.status, 'Empty response body');
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = '';
+  let gotDone = false;
+  try {
+    while (true) {
+      let part: ReadableStreamReadResult<string>;
+      try {
+        part = await reader.read();
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError' || signal.aborted) throw e;
+        throw new StreamInterruptedError();
+      }
+
+      const { done, value } = part;
+      if (done) break;
+      buf += value;
+
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+
+        // Router/model-loading/background keepalive.
+        if (line.startsWith(':')) {
+          yield '';
+          continue;
+        }
+        if (!line.startsWith('data:')) continue;
+
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') {
+          gotDone = true;
+          return;
+        }
+
+        let chunk: any;
+        try { chunk = JSON.parse(data); } catch { continue; }
+        if (chunk.error) {
+          throw new LLMApiError(
+            chunk.error.code || 500,
+            chunk.error.message || String(chunk.error),
+          );
+        }
+
+        const delta = chunk.choices?.[0]?.delta;
+        if (delta?.content) yield delta.content as string;
+        else if (delta?.reasoning_content) yield '';
+      }
+    }
+
+    if (strictDone && !gotDone && !signal.aborted) {
+      throw new StreamInterruptedError();
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
 /**
  * GET /health (llama.cpp, vLLM). Providers without it (OpenAI, Ollama)
  * answer 404 — we then fall back to GET /v1/models.
@@ -60,7 +144,7 @@ async function readErrorMessage(res: Response): Promise<string> {
 export async function checkHealth(cfg: ProviderConfig, timeoutMs = 4000): Promise<Exclude<HealthStatus, 'checking' | 'demo'>> {
   const base = normalizeBaseUrl(cfg.baseUrl);
   const res = await fetch(`${base}/health`, { headers: authHeaders(cfg), signal: timeoutSignal(timeoutMs) });
-  if (res.status === 503) return 'loading'; // llama.cpp: model still loading
+  if (res.status === 503) return 'loading';
   if (res.ok) {
     let body: { status?: string } = {};
     try { body = await res.json(); } catch { /* vLLM returns an empty body */ }
@@ -71,6 +155,21 @@ export async function checkHealth(cfg: ProviderConfig, timeoutMs = 4000): Promis
     return r.ok ? 'online' : 'offline';
   }
   return 'offline';
+}
+
+/** True only for Lueur's router that can keep a generation alive server-side. */
+export async function supportsBackgroundGenerations(cfg: ProviderConfig): Promise<boolean> {
+  try {
+    const res = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/health`, {
+      headers: authHeaders(cfg),
+      signal: timeoutSignal(4000),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return body?.background_generations === true;
+  } catch {
+    return false;
+  }
 }
 
 /** GET /v1/models — ids of models exposed by the server. */
@@ -99,8 +198,7 @@ export async function getServerInfo(cfg: ProviderConfig): Promise<ServerInfo> {
 }
 
 /**
- * POST /v1/chat/completions with `stream: true`.
- * Yields content deltas as they arrive. Abort via `signal`.
+ * Normal OpenAI-compatible POST /v1/chat/completions with streaming.
  */
 export async function* streamChat(
   cfg: ProviderConfig,
@@ -114,48 +212,124 @@ export async function* streamChat(
     signal,
   });
   if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
-  if (!res.body) throw new LLMApiError(res.status, 'Empty response body');
+  yield* parseSse(res, signal);
+}
 
-  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buf = '';
-  try {
-    while (true) {
-      let chunk: ReadableStreamReadResult<string>;
-      try {
-        chunk = await reader.read();
-      } catch (e) {
-        if ((e as Error)?.name === 'AbortError' || signal.aborted) throw e;
-        throw new StreamInterruptedError();
+/**
+ * Starts an idempotent router-owned generation. If the public connection drops,
+ * it reconnects to the same job instead of asking llama.cpp to generate twice.
+ */
+export async function* streamBackgroundChat(
+  cfg: ProviderConfig,
+  params: ChatCompletionParams,
+  jobId: string,
+  signal: AbortSignal,
+): AsyncGenerator<string, void, void> {
+  const base = normalizeBaseUrl(cfg.baseUrl);
+  let cursor = 0;
+  let initial = true;
+
+  while (!signal.aborted) {
+    try {
+      let res: Response;
+
+      if (initial) {
+        res = await fetch(`${base}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { ...jsonHeaders(cfg), Accept: 'text/event-stream' },
+          body: JSON.stringify({
+            ...params,
+            stream: true,
+            _lueur_job_id: jobId,
+            _lueur_cursor: cursor,
+          }),
+          signal,
+        });
+      } else {
+        res = await fetch(
+          `${base}/lueur/generations/${encodeURIComponent(jobId)}/stream?cursor=${cursor}`,
+          { headers: { ...authHeaders(cfg), Accept: 'text/event-stream' }, signal },
+        );
       }
-      const { done, value } = chunk;
-      if (done) break;
-      buf += value;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        // Router/model-loading keepalive. Yielding an empty token lets useChat
-        // refresh its inactivity timeout without displaying anything.
-        if (line.startsWith(':')) {
-          yield '';
-          continue;
-        }
-        if (!line.startsWith('data:')) continue; // `event:` lines, blanks
-        const data = line.slice(5).trim();
-        if (data === '[DONE]') return;
-        let chunk: any;
-        try { chunk = JSON.parse(data); } catch { continue; }
-        if (chunk.error) throw new LLMApiError(chunk.error.code || 500, chunk.error.message || String(chunk.error));
-        const delta = chunk.choices?.[0]?.delta;
-        if (delta?.content) yield delta.content as string;
-        // Some servers (llama.cpp --reasoning-format, DeepSeek) stream reasoning separately:
-        // it is not displayed, but yielding '' keeps the caller's inactivity timer alive.
-        else if (delta?.reasoning_content) yield '';
+
+      if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
+      initial = false;
+
+      for await (const token of parseSse(res, signal, true)) {
+        if (token) cursor += codePointLength(token);
+        yield token;
       }
+      return;
+    } catch (e) {
+      if (signal.aborted || (e as Error)?.name === 'AbortError') throw e;
+      if (e instanceof LLMApiError) throw e;
+
+      // A mobile browser may suspend/drop the SSE socket while hidden. The
+      // router keeps generating; reconnect after a short delay.
+      yield '';
+      await sleep(800, signal);
     }
-  } finally {
-    reader.cancel().catch(() => {});
   }
+}
+
+/** Re-attach to a router-owned generation after a page reload/browser reopen. */
+export async function* resumeBackgroundChat(
+  cfg: ProviderConfig,
+  jobId: string,
+  cursor: number,
+  signal: AbortSignal,
+): AsyncGenerator<string, void, void> {
+  const base = normalizeBaseUrl(cfg.baseUrl);
+  let offset = Math.max(0, cursor);
+
+  while (!signal.aborted) {
+    try {
+      const res = await fetch(
+        `${base}/lueur/generations/${encodeURIComponent(jobId)}/stream?cursor=${offset}`,
+        { headers: { ...authHeaders(cfg), Accept: 'text/event-stream' }, signal },
+      );
+      if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
+
+      for await (const token of parseSse(res, signal, true)) {
+        if (token) offset += codePointLength(token);
+        yield token;
+      }
+      return;
+    } catch (e) {
+      if (signal.aborted || (e as Error)?.name === 'AbortError') throw e;
+      if (e instanceof LLMApiError) throw e;
+      yield '';
+      await sleep(800, signal);
+    }
+  }
+}
+
+export async function getBackgroundGeneration(
+  cfg: ProviderConfig,
+  jobId: string,
+): Promise<BackgroundGeneration> {
+  const res = await fetch(
+    `${normalizeBaseUrl(cfg.baseUrl)}/lueur/generations/${encodeURIComponent(jobId)}`,
+    { headers: authHeaders(cfg), signal: timeoutSignal(5000) },
+  );
+  if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
+  return res.json();
+}
+
+export async function cancelBackgroundGeneration(
+  cfg: ProviderConfig,
+  jobId: string,
+): Promise<void> {
+  const res = await fetch(
+    `${normalizeBaseUrl(cfg.baseUrl)}/lueur/generations/${encodeURIComponent(jobId)}/cancel`,
+    {
+      method: 'POST',
+      headers: jsonHeaders(cfg),
+      body: '{}',
+      signal: timeoutSignal(5000),
+    },
+  );
+  if (!res.ok && res.status !== 404) throw new LLMApiError(res.status, await readErrorMessage(res));
 }
 
 /**
@@ -172,4 +346,16 @@ export async function isReachableIgnoringCors(cfg: ProviderConfig): Promise<bool
   }
 }
 
-export const llmApi = { checkHealth, listModels, getServerInfo, streamChat, normalizeBaseUrl, isReachableIgnoringCors };
+export const llmApi = {
+  checkHealth,
+  listModels,
+  getServerInfo,
+  streamChat,
+  supportsBackgroundGenerations,
+  streamBackgroundChat,
+  resumeBackgroundChat,
+  getBackgroundGeneration,
+  cancelBackgroundGeneration,
+  normalizeBaseUrl,
+  isReachableIgnoringCors,
+};
