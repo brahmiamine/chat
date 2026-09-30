@@ -63,6 +63,200 @@ _model_proc: subprocess.Popen | None = None
 _model_log_handle = None
 _active_model: str | None = None
 
+# Background generation jobs are owned by the router, not by the browser
+# connection. This lets llama.cpp keep generating even if the tab/browser is
+# closed, suspended, or temporarily disconnected.
+_jobs_lock = threading.RLock()
+_generation_lock = threading.Lock()
+_jobs: dict[str, "GenerationJob"] = {}
+JOB_TTL = 3600
+
+
+class GenerationJob:
+    def __init__(self, job_id: str) -> None:
+        self.id = job_id
+        self.content = ""
+        self.status = "running"  # running | done | stopped | error
+        self.error: str | None = None
+        self.cancelled = False
+        self.updated_at = time.time()
+        self.cond = threading.Condition()
+        self.conn: http.client.HTTPConnection | None = None
+
+    def snapshot(self) -> dict[str, object]:
+        with self.cond:
+            return {
+                "id": self.id,
+                "status": self.status,
+                "content": self.content,
+                "cursor": len(self.content),
+                "error": self.error,
+                "updated_at": self.updated_at,
+            }
+
+
+def prune_jobs() -> None:
+    cutoff = time.time() - JOB_TTL
+    with _jobs_lock:
+        stale = [
+            jid for jid, job in _jobs.items()
+            if job.status != "running" and job.updated_at < cutoff
+        ]
+        for jid in stale:
+            _jobs.pop(jid, None)
+
+
+def get_job(job_id: str) -> GenerationJob | None:
+    prune_jobs()
+    with _jobs_lock:
+        return _jobs.get(job_id)
+
+
+def cancel_job(job_id: str) -> bool:
+    job = get_job(job_id)
+    if not job:
+        return False
+    with job.cond:
+        job.cancelled = True
+        if job.status == "running":
+            job.status = "stopped"
+        job.updated_at = time.time()
+        conn = job.conn
+        job.cond.notify_all()
+    if conn:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return True
+
+
+def set_job_terminal(job: GenerationJob, status: str, error: str | None = None) -> None:
+    with job.cond:
+        if job.cancelled:
+            job.status = "stopped"
+            job.error = None
+        else:
+            job.status = status
+            job.error = error
+        job.updated_at = time.time()
+        job.cond.notify_all()
+
+
+def run_generation_job(job: GenerationJob, body: dict) -> None:
+    # llama-server uses -np 1; serialize background generations accordingly.
+    with _generation_lock:
+        conn: http.client.HTTPConnection | None = None
+        try:
+            if job.cancelled:
+                set_job_terminal(job, "stopped")
+                return
+
+            upstream = dict(body)
+            upstream.pop("_lueur_job_id", None)
+            upstream["stream"] = True
+
+            model_id = str(upstream.get("model") or DEFAULT_MODEL)
+            if model_id == "local":
+                model_id = DEFAULT_MODEL
+                upstream["model"] = model_id
+
+            ensure_model(model_id)
+
+            if job.cancelled:
+                set_job_terminal(job, "stopped")
+                return
+
+            conn = http.client.HTTPConnection(MODEL_HOST, MODEL_PORT, timeout=3600)
+            with job.cond:
+                job.conn = conn
+
+            raw = json.dumps(upstream, ensure_ascii=False).encode("utf-8")
+            conn.request(
+                "POST",
+                "/v1/chat/completions",
+                body=raw,
+                headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+            )
+            res = conn.getresponse()
+            if res.status >= 400:
+                detail = res.read().decode("utf-8", "replace")
+                raise RuntimeError(detail or f"HTTP {res.status}")
+
+            while not job.cancelled:
+                line = res.readline()
+                if not line:
+                    if job.cancelled:
+                        break
+                    raise RuntimeError("Flux modèle interrompu")
+                text = line.decode("utf-8", "replace").strip()
+                if not text or text.startswith(":") or not text.startswith("data:"):
+                    continue
+
+                data = text[5:].strip()
+                if data == "[DONE]":
+                    set_job_terminal(job, "done")
+                    return
+
+                try:
+                    payload = json.loads(data)
+                except Exception:
+                    continue
+
+                if payload.get("error"):
+                    err = payload["error"]
+                    if isinstance(err, dict):
+                        raise RuntimeError(str(err.get("message") or err))
+                    raise RuntimeError(str(err))
+
+                choices = payload.get("choices") or [{}]
+                delta = (choices[0].get("delta") or {}) if choices else {}
+                token = delta.get("content")
+                if token:
+                    with job.cond:
+                        job.content += str(token)
+                        job.updated_at = time.time()
+                        job.cond.notify_all()
+                elif delta.get("reasoning_content"):
+                    # Wake attached clients so they still receive keepalives.
+                    with job.cond:
+                        job.updated_at = time.time()
+                        job.cond.notify_all()
+
+            set_job_terminal(job, "stopped")
+        except Exception as exc:
+            if job.cancelled:
+                set_job_terminal(job, "stopped")
+            else:
+                log(f"Generation {job.id} error: {exc}")
+                set_job_terminal(job, "error", str(exc))
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            with job.cond:
+                job.conn = None
+
+
+def get_or_start_job(job_id: str, body: dict) -> GenerationJob:
+    prune_jobs()
+    with _jobs_lock:
+        existing = _jobs.get(job_id)
+        if existing:
+            return existing
+        job = GenerationJob(job_id)
+        _jobs[job_id] = job
+
+    threading.Thread(
+        target=run_generation_job,
+        args=(job, body),
+        name=f"lueur-job-{job_id[:8]}",
+        daemon=True,
+    ).start()
+    return job
+
 
 def log(message: str) -> None:
     print(time.strftime("[%H:%M:%S]"), message, flush=True)
@@ -221,7 +415,12 @@ class RouterHandler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
 
         if path == "/health":
-            self._json(200, {"status": "ok", "router": "termux-python", "active_model": active_model()})
+            self._json(200, {
+                "status": "ok",
+                "router": "termux-python",
+                "active_model": active_model(),
+                "background_generations": True,
+            })
             return
 
         if path == "/models":
@@ -253,6 +452,30 @@ class RouterHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path.startswith("/lueur/generations/"):
+            suffix = path[len("/lueur/generations/"):].strip("/")
+            if suffix.endswith("/stream"):
+                job_id = urllib.parse.unquote(suffix[:-len("/stream")].strip("/"))
+                job = get_job(job_id)
+                if not job:
+                    self._json(404, {"error": {"message": "Generation not found"}})
+                    return
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                try:
+                    cursor = max(0, int((query.get("cursor") or ["0"])[0]))
+                except ValueError:
+                    cursor = 0
+                self._stream_job(job, cursor)
+                return
+
+            job_id = urllib.parse.unquote(suffix)
+            job = get_job(job_id)
+            if not job:
+                self._json(404, {"error": {"message": "Generation not found"}})
+                return
+            self._json(200, job.snapshot())
+            return
+
         self._serve_static(path)
 
     def do_POST(self) -> None:
@@ -275,6 +498,15 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "ok"})
             return
 
+        if path.startswith("/lueur/generations/") and path.endswith("/cancel"):
+            suffix = path[len("/lueur/generations/"):-len("/cancel")].strip("/")
+            job_id = urllib.parse.unquote(suffix)
+            if not job_id or not cancel_job(job_id):
+                self._json(404, {"error": {"message": "Generation not found"}})
+            else:
+                self._json(200, {"status": "stopped", "id": job_id})
+            return
+
         if path == "/v1/chat/completions":
             self._chat_completions()
             return
@@ -293,6 +525,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             model_id = DEFAULT_MODEL
             body["model"] = model_id
         stream = bool(body.get("stream", False))
+        job_id = str(body.get("_lueur_job_id") or "").strip()
 
         if model_id not in MODELS:
             self._json(400, {"error": {"message": f"Modèle inconnu: {model_id}"}})
@@ -302,6 +535,15 @@ class RouterHandler(BaseHTTPRequestHandler):
             body["chat_template_kwargs"] = {"enable_thinking": False}
 
         if stream:
+            # Lueur background mode: generation belongs to the router. If the
+            # browser disconnects, only this SSE attachment ends; llama.cpp
+            # continues and the UI can reconnect later with the same job id.
+            if job_id:
+                job = get_or_start_job(job_id, body)
+                self._stream_job(job, 0)
+                return
+
+            # Compatibility mode for other OpenAI-compatible clients.
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -339,6 +581,61 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": str(e)}})
         except Exception as e:
             self._json(500, {"error": {"message": str(e)}})
+
+    def _stream_job(self, job: GenerationJob, cursor: int = 0) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self._cors()
+        self.end_headers()
+
+        try:
+            while True:
+                with job.cond:
+                    content = job.content
+                    status = job.status
+                    error = job.error
+
+                    if len(content) <= cursor and status == "running":
+                        job.cond.wait(timeout=10)
+                        content = job.content
+                        status = job.status
+                        error = job.error
+
+                if len(content) > cursor:
+                    delta = content[cursor:]
+                    cursor = len(content)
+                    payload = {
+                        "choices": [{"delta": {"content": delta}}],
+                        "lueur": {"job_id": job.id, "cursor": cursor, "status": status},
+                    }
+                    raw = json.dumps(payload, ensure_ascii=False)
+                    self.wfile.write(f"data: {raw}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    continue
+
+                if status == "running":
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
+
+                if status == "error":
+                    payload = json.dumps(
+                        {"error": {"message": error or "Generation failed"}},
+                        ensure_ascii=False,
+                    )
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                break
+        except (BrokenPipeError, ConnectionResetError):
+            # Important: do NOT cancel the job. Browser disconnects are normal.
+            pass
+        finally:
+            self.close_connection = True
 
     def _proxy_stream(self, body: dict) -> None:
         conn = http.client.HTTPConnection(MODEL_HOST, MODEL_PORT, timeout=3600)
@@ -429,6 +726,10 @@ class RouterHandler(BaseHTTPRequestHandler):
 
 
 def cleanup() -> None:
+    with _jobs_lock:
+        job_ids = list(_jobs)
+    for job_id in job_ids:
+        cancel_job(job_id)
     stop_model()
 
 
