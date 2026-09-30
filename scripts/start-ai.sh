@@ -170,11 +170,41 @@ fi
 if [ ! -r "$QWEN3_MODEL_PATH" ]; then
   echo "⬇️  Téléchargement de Qwen3 8B Q4_0 (~4.8 Go)..."
   QWEN3_TMP="$QWEN3_MODEL_PATH.part"
-  if ! curl -L --fail --retry 3 --retry-delay 3 -C -       -o "$QWEN3_TMP" "$QWEN3_MODEL_URL"; then
-    echo "❌ Téléchargement de Qwen3 8B impossible"
-    echo "   Fichier partiel conservé : $QWEN3_TMP"
+  QWEN3_DOWNLOAD_OK=0
+
+  # Les gros téléchargements Hugging Face peuvent être interrompus par Android
+  # ou par le réseau. On reprend toujours le même .part au lieu de recommencer.
+  for attempt in $(seq 1 20); do
+    if [ -f "$QWEN3_TMP" ]; then
+      CURRENT_SIZE="$(du -h "$QWEN3_TMP" 2>/dev/null | cut -f1)"
+      echo "↩️  Reprise tentative $attempt/20 depuis ${CURRENT_SIZE:-0}"
+    else
+      echo "⬇️  Tentative $attempt/20"
+    fi
+
+    if curl -L --fail \
+        --connect-timeout 30 \
+        --retry 5 \
+        --retry-delay 5 \
+        --retry-all-errors \
+        -C - \
+        -o "$QWEN3_TMP" \
+        "$QWEN3_MODEL_URL"; then
+      QWEN3_DOWNLOAD_OK=1
+      break
+    fi
+
+    echo "⚠️  Connexion interrompue, nouvelle reprise dans 5 secondes..."
+    sleep 5
+  done
+
+  if [ "$QWEN3_DOWNLOAD_OK" != "1" ]; then
+    echo "❌ Téléchargement de Qwen3 8B interrompu après 20 tentatives"
+    echo "   Aucun octet n’est perdu : $QWEN3_TMP"
+    echo "   Relance simplement ~/start-ai.sh restart pour continuer."
     exit 1
   fi
+
   mv "$QWEN3_TMP" "$QWEN3_MODEL_PATH"
   echo "✅ Qwen3 8B Q4_0 téléchargé"
 fi
