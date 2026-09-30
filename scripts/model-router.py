@@ -35,19 +35,30 @@ MODEL_PORT = int(os.environ.get("LUEUR_MODEL_PORT", "8081"))
 CTX = int(os.environ.get("LUEUR_CTX", "4096"))
 # Sur téléphone, utiliser tous les cœurs (y compris les "little") ralentit la
 # génération : on se limite par défaut aux cœurs performants.
-THREADS = int(os.environ.get("LUEUR_THREADS", "4"))
+THREADS = int(os.environ.get("LUEUR_THREADS", "6"))
 # Les modèles "thinking" génèrent un long raisonnement caché avant la réponse.
 # Désactivé par défaut pour qu'ils répondent tout de suite (LUEUR_THINKING=1 pour le garder).
 THINKING = os.environ.get("LUEUR_THINKING", "0") == "1"
 UI_DIR = Path(os.environ.get("LUEUR_UI_DIR", str(Path.home() / "lueur-ui"))).resolve()
 LLAMA_DIR = Path(os.environ.get("LUEUR_LLAMA_DIR", str(Path.home() / "llama.cpp"))).resolve()
-LLAMA_BIN = LLAMA_DIR / "build" / "bin" / "llama-server"
+SNAP_LLAMA_DIR = Path(
+    os.environ.get("LUEUR_SNAP_LLAMA_DIR", str(Path.home() / "llama-snapdragon"))
+).resolve()
+SNAP_LLAMA_BIN = SNAP_LLAMA_DIR / "bin" / "llama-server"
+QWEN25_MODEL_PATH = Path(
+    os.environ.get(
+        "LUEUR_QWEN25_MODEL_PATH",
+        str(Path.home() / "models" / "Qwen2.5-7B-Instruct-Q4_0.gguf"),
+    )
+).resolve()
+QWEN3_MODEL_PATH = Path(
+    os.environ.get(
+        "LUEUR_QWEN3_MODEL_PATH",
+        str(Path.home() / "models" / "Qwen3-8B-Q4_0.gguf"),
+    )
+).resolve()
 MODEL_LOG = Path(os.environ.get("LUEUR_MODEL_LOG", str(Path.home() / "llama-model.log")))
-EXTERNAL_LOCAL = os.environ.get("LUEUR_EXTERNAL_LOCAL", "1") == "1"
-EXTERNAL_LOCAL_ID = os.environ.get(
-    "LUEUR_EXTERNAL_LOCAL_ID", "local::qwen2.5-7b-instruct-q4_0"
-)
-DEFAULT_MODEL = os.environ.get("LUEUR_DEFAULT_MODEL", EXTERNAL_LOCAL_ID)
+DEFAULT_MODEL = os.environ.get("LUEUR_DEFAULT_MODEL", "local::qwen2.5-7b-instruct-q4_0")
 
 PROVIDERS: dict[str, dict[str, object]] = {
     "local": {
@@ -103,11 +114,19 @@ PROVIDERS: dict[str, dict[str, object]] = {
 }
 
 MODELS: dict[str, dict[str, object]] = {
-    # Unique modèle local : Qwen2.5 7B sur Snapdragon Hexagon HTP0.
-    EXTERNAL_LOCAL_ID: {
+    # Local Snapdragon Hexagon NPU models. Only one is loaded at a time.
+    "local::qwen2.5-7b-instruct-q4_0": {
         "label": "Qwen2.5 7B · Snapdragon NPU",
         "provider": "local",
         "vision": False,
+        "path": str(QWEN25_MODEL_PATH),
+    },
+    "local::qwen3-8b-q4_0": {
+        "label": "Qwen3 8B · Snapdragon NPU",
+        "provider": "local",
+        "vision": False,
+        "thinking": True,
+        "path": str(QWEN3_MODEL_PATH),
     },
 
     # Cloud models. Prefixing the id avoids collisions between providers.
@@ -796,18 +815,12 @@ def model_health() -> bool:
 def stop_model() -> None:
     global _model_proc, _model_log_handle, _active_model
 
-    if EXTERNAL_LOCAL:
-        # start-ai.sh owns the Snapdragon/NPU llama-server process.
-        _model_proc = None
-        _active_model = None
-        return
-
     proc = _model_proc
     _model_proc = None
     _active_model = None
 
     if proc and proc.poll() is None:
-        log("Arrêt du modèle actif...")
+        log("Arrêt du modèle local NPU actif...")
         try:
             proc.terminate()
             proc.wait(timeout=15)
@@ -837,34 +850,35 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
 
     meta = MODELS[model_id]
     if str(meta.get("provider") or "local") != "local":
-        # Selecting a cloud model releases router-managed local RAM.
-        # In external Snapdragon mode start-ai.sh owns the NPU server.
         with _model_lock:
             stop_model()
         return
 
-    if EXTERNAL_LOCAL:
-        if model_id != EXTERNAL_LOCAL_ID:
-            raise RuntimeError(f"Modèle local externe non disponible: {model_id}")
-        if not model_health():
-            raise RuntimeError(
-                f"Qwen2.5 7B NPU indisponible sur http://{MODEL_HOST}:{MODEL_PORT}"
-            )
-        _active_model = model_id
-        return
+    model_path = Path(str(meta.get("path") or "")).resolve()
 
     with _model_lock:
-        if _active_model == model_id and _model_proc and _model_proc.poll() is None and model_health():
+        if (
+            _active_model == model_id
+            and _model_proc
+            and _model_proc.poll() is None
+            and model_health()
+        ):
             return
 
         stop_model()
 
-        if not LLAMA_BIN.exists():
-            raise RuntimeError(f"llama-server introuvable: {LLAMA_BIN}")
+        if not SNAP_LLAMA_BIN.exists():
+            raise RuntimeError(f"llama-server Snapdragon introuvable: {SNAP_LLAMA_BIN}")
+        if not model_path.exists():
+            raise RuntimeError(f"Modèle local introuvable: {model_path}")
 
         args = [
-            str(LLAMA_BIN),
-            "-hf", model_id,
+            str(SNAP_LLAMA_BIN),
+            "-m", str(model_path),
+            "-ngl", "99",
+            "--device", "HTP0",
+            "-fa", "on",
+            "--ubatch-size", "1024",
             "--host", MODEL_HOST,
             "--port", str(MODEL_PORT),
             "-c", str(CTX),
@@ -872,15 +886,21 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
         ]
         if THREADS > 0:
             args += ["-t", str(THREADS)]
-        if bool(meta.get("vision")):
-            args.append("--mmproj-auto")
+
+        model_env = os.environ.copy()
+        runtime_lib = str(SNAP_LLAMA_DIR / "lib")
+        model_env["LD_LIBRARY_PATH"] = runtime_lib
+        model_env["ADSP_LIBRARY_PATH"] = runtime_lib
+        model_env["GGML_HEXAGON_DEVICES"] = "HTP0"
+        model_env["GGML_HEXAGON_OPPOLL"] = "1"
 
         MODEL_LOG.parent.mkdir(parents=True, exist_ok=True)
         _model_log_handle = MODEL_LOG.open("w", encoding="utf-8")
-        log(f"Chargement: {meta['label']} ({model_id})")
+        log(f"Chargement NPU: {meta['label']} ({model_path.name})")
         _model_proc = subprocess.Popen(
             args,
-            cwd=str(LLAMA_DIR),
+            cwd=str(SNAP_LLAMA_DIR),
+            env=model_env,
             stdout=_model_log_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -894,12 +914,12 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
                 code = _model_proc.returncode
                 _active_model = None
                 raise RuntimeError(
-                    f"llama-server s'est arrêté pendant le chargement (code {code}). "
+                    f"llama-server NPU s'est arrêté pendant le chargement (code {code}). "
                     f"Voir {MODEL_LOG}"
                 )
 
             if model_health():
-                log(f"Modèle prêt: {meta['label']}")
+                log(f"Modèle NPU prêt: {meta['label']}")
                 return
 
             now = time.monotonic()
@@ -914,11 +934,8 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
 
 
 def active_model() -> str | None:
-    if EXTERNAL_LOCAL:
-        return EXTERNAL_LOCAL_ID if model_health() else None
-
     with _model_lock:
-        if _model_proc and _model_proc.poll() is None:
+        if _model_proc and _model_proc.poll() is None and model_health():
             return _active_model
         return None
 
