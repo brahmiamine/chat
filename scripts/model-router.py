@@ -154,6 +154,7 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
 
             upstream = dict(body)
             upstream.pop("_lueur_job_id", None)
+            upstream.pop("_lueur_cursor", None)
             upstream["stream"] = True
 
             model_id = str(upstream.get("model") or DEFAULT_MODEL)
@@ -526,6 +527,10 @@ class RouterHandler(BaseHTTPRequestHandler):
             body["model"] = model_id
         stream = bool(body.get("stream", False))
         job_id = str(body.get("_lueur_job_id") or "").strip()
+        try:
+            job_cursor = max(0, int(body.get("_lueur_cursor") or 0))
+        except (TypeError, ValueError):
+            job_cursor = 0
 
         if model_id not in MODELS:
             self._json(400, {"error": {"message": f"Modèle inconnu: {model_id}"}})
@@ -540,7 +545,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             # continues and the UI can reconnect later with the same job id.
             if job_id:
                 job = get_or_start_job(job_id, body)
-                self._stream_job(job, 0)
+                self._stream_job(job, job_cursor)
                 return
 
             # Compatibility mode for other OpenAI-compatible clients.
