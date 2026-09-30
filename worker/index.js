@@ -9,6 +9,11 @@ const PROVIDERS = {
     label: 'Local · llama.cpp',
     required: ['LUEUR_LOCAL_URL'],
   },
+  modal: {
+    label: 'Modal GPU · llama.cpp',
+    key: 'MODAL_API_KEY',
+    required: ['MODAL_BASE_URL', 'MODAL_API_KEY'],
+  },
   groq: {
     label: 'GroqCloud',
     baseUrl: 'https://api.groq.com/openai/v1',
@@ -93,6 +98,13 @@ const MODELS = {
   'local::deepseek-r1-qwen-7b-q4_0': {
     label: 'DeepSeek R1 Qwen 7B · Snapdragon NPU',
     provider: 'local',
+    vision: false,
+  },
+
+  'modal::qwen2.5-7b-instruct-q4_k_m': {
+    label: 'Qwen2.5 7B · Modal T4',
+    provider: 'modal',
+    remoteId: '/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf',
     vision: false,
   },
 
@@ -272,6 +284,11 @@ function providerBaseUrl(providerId, env) {
     const accountId = clean(env.CLOUDFLARE_ACCOUNT_ID);
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID manquant');
     return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+  }
+  if (providerId === 'modal') {
+    const baseUrl = clean(env.MODAL_BASE_URL).replace(/\/+$/, '');
+    if (!baseUrl) throw new Error('MODAL_BASE_URL manquant');
+    return `${baseUrl}/v1`;
   }
   return PROVIDERS[providerId]?.baseUrl || '';
 }
