@@ -90,7 +90,7 @@ export function ChatHeader({ isMobile, models, modelId, currentLabel, health, on
                 >
                   <span className="txt">
                     <span className="name">{modelLabel(m)}</span>
-                    <span className="id">{m.id}</span>
+                    <span className="id">{m.providerLabel ? `${m.providerLabel} · ` : ''}{m.id.replace(/^[a-z]+::/i, '')}</span>
                   </span>
                   <span className="tick">{on && <CheckIcon />}</span>
                 </button>
