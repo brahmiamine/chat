@@ -81,7 +81,8 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
               </button>
             </div>
             <div className="s-help">
-              Les clés Groq, Gemini, Mistral, OpenRouter, Cloudflare, Hugging Face, NVIDIA, Cohere et Vercel restent côté Termux dans <code>~/.lueur.env</code>.
+              Les clés des fournisseurs restent côté serveur : Termux conserve ses clés dans <code>~/.lueur.env</code>,
+              tandis que la clé Modal est stockée comme secret du Worker Cloudflare.
             </div>
           </div>
 
