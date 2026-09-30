@@ -80,7 +80,14 @@ function migrateDefaultModel(s: Settings): Settings {
   const modelId = LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId;
   const models = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
-    .map(m => ({ ...m }));
+    .map(m => {
+      const builtin = DEFAULT_MODELS.find(x => x.id === m.id);
+      // Enrich settings saved by older versions with provider metadata while
+      // preserving any custom display label chosen by the user.
+      return builtin
+        ? { ...builtin, ...m, provider: builtin.provider, providerLabel: builtin.providerLabel }
+        : { ...m, provider: m.provider || 'custom' as const };
+    });
 
   // Keep all built-in local + cloud router models available in the selector,
   // including for users who already have settings saved locally.
