@@ -122,44 +122,58 @@ Pour passer à **OpenAI** (`https://api.openai.com`), **Ollama** (`http://host:1
 - Markdown et highlight.js sont dans un chunk séparé, préchargé quand le navigateur est inactif.
 
 
-## Accès public : ngrok
+## Accès public : ngrok via Debian/proot
 
-Lueur utilise désormais **ngrok** pour l'accès public HTTPS. Le tunnel pointe vers le router local sur `127.0.0.1:8080` et convient au streaming du chat.
+Lueur utilise **ngrok** pour l'accès public HTTPS. Sur Android/Termux, le binaire Linux ngrok est exécuté dans un petit Debian via `proot-distro`, tandis que Lueur, le router Python et llama.cpp restent directement dans Termux.
 
-Installez ngrok sur Termux ARM64 :
+Installation initiale :
 
 ```bash
-cd ~
+pkg install proot-distro -y
+proot-distro install debian
+proot-distro login debian
+```
+
+Puis, dans Debian :
+
+```bash
+apt update
+apt install -y curl ca-certificates
+cd /root
 curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz
-chmod +x ~/ngrok
+chmod +x /root/ngrok
+/root/ngrok config add-authtoken TON_TOKEN_NGROK
+exit
 ```
 
-Ajoutez ensuite votre authtoken ngrok (compte gratuit suffisant pour tester) :
+Ne stockez jamais l'authtoken dans GitHub.
 
-```bash
-~/ngrok config add-authtoken TON_TOKEN_NGROK
-```
-
-Ne stockez jamais cet authtoken dans GitHub.
-
-Puis démarrez Lueur :
+Ensuite, depuis Termux :
 
 ```bash
 ~/start-ai.sh restart
 ```
 
-Le script lance automatiquement :
+Le script démarre automatiquement ngrok dans Debian/proot avec le domaine réservé de Lueur :
 
-```bash
-ngrok http 8080
+```text
+https://expansile-ramiro-intertribal.ngrok-free.dev
 ```
 
-Il récupère l'URL HTTPS depuis l'API locale ngrok sur `127.0.0.1:4040`, l'enregistre dans `~/ai-url.txt`, puis vérifie `/health`.
-
-Pour utiliser plus tard une URL ngrok réservée/stable, vous pouvez ajouter dans `~/.lueur.env` :
+Il exécute l'équivalent de :
 
 ```bash
-export LUEUR_NGROK_URL='https://votre-url.ngrok.app'
+proot-distro login debian -- \
+  /root/ngrok http 8080 \
+  --url https://expansile-ramiro-intertribal.ngrok-free.dev
+```
+
+L'URL HTTPS est lue depuis l'API locale ngrok sur `127.0.0.1:4040`, enregistrée dans `~/ai-url.txt`, puis `/health` est vérifié automatiquement.
+
+Pour remplacer le domaine réservé sans modifier le script :
+
+```bash
+echo "export LUEUR_NGROK_URL='https://autre-domaine.ngrok.app'" >> ~/.lueur.env
 ```
 
 Le script arrête également les anciens tunnels Serveo, localhost.run et Cloudflare lors d'un redémarrage.
