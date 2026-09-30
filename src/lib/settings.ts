@@ -3,8 +3,20 @@ import type { GenerationSettings, ModelEntry, Settings } from '../types';
 const env = import.meta.env;
 
 const DEFAULT_MODEL_ID = 'local::qwen2.5-7b-instruct-q4_0';
+const PHI4_MINI_MODEL_ID = 'local::phi4-mini-3.8b-q4_0';
 const QWEN3_MODEL_ID = 'local::qwen3-8b-q4_0';
-const SUPPORTED_LOCAL_MODEL_IDS = new Set([DEFAULT_MODEL_ID, QWEN3_MODEL_ID]);
+const QWEN25_CODER_MODEL_ID = 'local::qwen2.5-coder-7b-q4_0';
+const GEMMA3_12B_MODEL_ID = 'local::gemma3-12b-q4_0';
+const DEEPSEEK_R1_14B_MODEL_ID = 'local::deepseek-r1-qwen-14b-q4_0';
+
+const SUPPORTED_LOCAL_MODEL_IDS = new Set([
+  PHI4_MINI_MODEL_ID,
+  DEFAULT_MODEL_ID,
+  QWEN3_MODEL_ID,
+  QWEN25_CODER_MODEL_ID,
+  GEMMA3_12B_MODEL_ID,
+  DEEPSEEK_R1_14B_MODEL_ID,
+]);
 
 const OLD_LOCAL_MODEL_IDS = new Set([
   'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M',
@@ -31,8 +43,12 @@ const PROVIDER_LABELS = {
 
 export const DEFAULT_MODELS: ModelEntry[] = [
   // Snapdragon Hexagon NPU — one local model loaded at a time.
+  { id: PHI4_MINI_MODEL_ID, label: 'Phi-4 Mini 3.8B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
   { id: DEFAULT_MODEL_ID, label: 'Qwen2.5 7B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
   { id: QWEN3_MODEL_ID, label: 'Qwen3 8B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: QWEN25_CODER_MODEL_ID, label: 'Qwen2.5 Coder 7B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: GEMMA3_12B_MODEL_ID, label: 'Gemma 3 12B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: DEEPSEEK_R1_14B_MODEL_ID, label: 'DeepSeek R1 Qwen 14B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
 
   // Cloud providers proxied securely by the Termux router.
   { id: 'groq::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
