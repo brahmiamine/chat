@@ -76,11 +76,6 @@ PROVIDERS: dict[str, dict[str, object]] = {
         "base_url": "",
         "required_env": ["CLOUDFLARE_AI_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
     },
-    "cerebras": {
-        "label": "Cerebras",
-        "base_url": "https://api.cerebras.ai/v1",
-        "required_env": ["CEREBRAS_API_KEY"],
-    },
     "huggingface": {
         "label": "Hugging Face Inference",
         "base_url": "https://router.huggingface.co/v1",
@@ -178,12 +173,6 @@ MODELS: dict[str, dict[str, object]] = {
         "label": "GPT-OSS 120B",
         "provider": "cloudflare",
         "remote_id": "@cf/openai/gpt-oss-120b",
-        "vision": False,
-    },
-    "cerebras::gpt-oss-120b": {
-        "label": "GPT-OSS 120B",
-        "provider": "cerebras",
-        "remote_id": "gpt-oss-120b",
         "vision": False,
     },
     "huggingface::deepseek-ai/DeepSeek-R1:fastest": {
@@ -754,7 +743,6 @@ def provider_headers(provider: str) -> dict[str, str]:
         "mistral": "MISTRAL_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
         "cloudflare": "CLOUDFLARE_AI_API_TOKEN",
-        "cerebras": "CEREBRAS_API_KEY",
         "huggingface": "HF_TOKEN",
         "nvidia": "NVIDIA_API_KEY",
         "cohere": "COHERE_API_KEY",
