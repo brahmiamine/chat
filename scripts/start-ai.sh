@@ -17,8 +17,8 @@ THREADS="${LUEUR_THREADS:-6}"
 
 UI_DIR="$HOME/lueur-ui"
 LLAMA_DIR="$HOME/llama.cpp"
-SNAP_LLAMA_DIR="${LUEUR_SNAP_LLAMA_DIR:-/data/local/tmp/llama.cpp}"
-LOCAL_MODEL_PATH="${LUEUR_LOCAL_MODEL_PATH:-/data/local/tmp/gguf/Qwen2.5-7B-Instruct-Q4_0.gguf}"
+SNAP_LLAMA_DIR="${LUEUR_SNAP_LLAMA_DIR:-$HOME/llama-snapdragon}"
+LOCAL_MODEL_PATH="${LUEUR_LOCAL_MODEL_PATH:-$HOME/models/Qwen2.5-7B-Instruct-Q4_0.gguf}"
 LOCAL_MODEL_ID="${LUEUR_LOCAL_MODEL_ID:-local::qwen2.5-7b-instruct-q4_0}"
 ROUTER_SCRIPT="$HOME/lueur-router.py"
 
@@ -154,7 +154,7 @@ fi
 
 if [ ! -x "$SNAP_LLAMA_DIR/bin/llama-server" ]; then
   echo "❌ Build Snapdragon llama-server introuvable : $SNAP_LLAMA_DIR/bin/llama-server"
-  echo "   Le build doit avoir été poussé avec scripts/snapdragon/build.py --target adb --push"
+  echo "   Chemin attendu dans Termux : ~/llama-snapdragon/bin/llama-server"
   exit 1
 fi
 
@@ -234,7 +234,6 @@ if health_ok && router_running; then
   echo "✅ Router IA déjà actif"
 else
   stop_proc "$ROUTER_PAT"
-  stop_proc "$LS_PAT"
 
   echo "🤖 Démarrage du router multi-modèles Android..."
   : > "$ROUTER_LOG"
