@@ -81,7 +81,7 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
               </button>
             </div>
             <div className="s-help">
-              Les clés Groq, Gemini, Mistral, OpenRouter, Cloudflare, Cerebras et Hugging Face restent côté Termux dans <code>~/.lueur.env</code>.
+              Les clés Groq, Gemini, Mistral, OpenRouter, Cloudflare, Cerebras, Hugging Face, NVIDIA, Cohere et Vercel restent côté Termux dans <code>~/.lueur.env</code>.
             </div>
           </div>
 
