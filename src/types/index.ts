@@ -89,7 +89,7 @@ export interface ChatCompletionParams {
 }
 
 export interface ProviderConfig {
-  /** Server root, e.g. https://…trycloudflare.com (a trailing /v1 or /v1/chat/completions is tolerated). */
+  /** Lueur/OpenAI-compatible server root, e.g. the public ngrok URL. */
   baseUrl: string;
   apiKey?: string;
 }
