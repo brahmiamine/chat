@@ -3,7 +3,8 @@
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
 # Le router Python garde un seul modèle GGUF local en RAM à la fois et peut
-# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, Cerebras et HF.
+# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, Cerebras, HF,
+# NVIDIA NIM, Cohere et Vercel AI Gateway.
 #
 # Usage :
 #   ~/start-ai.sh
