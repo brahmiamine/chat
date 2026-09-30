@@ -4,7 +4,7 @@
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
 # Six modèles Q4_0 peuvent tourner localement sur Snapdragon Hexagon HTP0.
 # Un seul modèle local est chargé à la fois, sans clé API locale.
-# Les modèles manquants sont téléchargés automatiquement au premier usage.
+# Tous les modèles manquants sont téléchargés automatiquement au démarrage.
 #
 # Usage :
 #   ~/start-ai.sh
@@ -160,7 +160,108 @@ if [ ! -x "$SNAP_LLAMA_DIR/bin/llama-server" ]; then
 fi
 
 mkdir -p "$MODEL_DIR"
-echo "📦 Modèles locaux : téléchargement à la demande dans $MODEL_DIR"
+echo "📦 Modèles locaux : vérification/téléchargement complet dans $MODEL_DIR"
+echo "💽 Espace disponible :"
+df -h "$MODEL_DIR" 2>/dev/null | tail -n 1 || true
+
+download_model() {
+  local label="$1"
+  local filename="$2"
+  local url="$3"
+  local target="$MODEL_DIR/$filename"
+  local part="$target.part"
+  local ok=0
+
+  if [ -s "$target" ]; then
+    echo "✅ $label déjà téléchargé"
+    return 0
+  fi
+
+  echo
+  echo "⬇️  $label"
+  echo "   → $filename"
+
+  for attempt in $(seq 1 20); do
+    if [ -f "$part" ]; then
+      local current_size
+      current_size="$(du -h "$part" 2>/dev/null | cut -f1)"
+      echo "↩️  Reprise tentative $attempt/20 depuis ${current_size:-0}"
+    else
+      echo "⬇️  Tentative $attempt/20"
+    fi
+
+    if curl -L --fail \
+        --connect-timeout 30 \
+        --retry 5 \
+        --retry-delay 5 \
+        --retry-all-errors \
+        -C - \
+        -o "$part" \
+        "$url"; then
+      ok=1
+      break
+    fi
+
+    echo "⚠️  Connexion interrompue, reprise dans 5 secondes..."
+    sleep 5
+  done
+
+  if [ "$ok" != "1" ]; then
+    echo "❌ Téléchargement de $label interrompu après 20 tentatives"
+    echo "   Fichier partiel conservé : $part"
+    return 1
+  fi
+
+  mv "$part" "$target"
+  echo "✅ $label téléchargé"
+}
+
+DOWNLOAD_FAILED=0
+
+download_model \
+  "Phi-4 Mini 3.8B Q4_0" \
+  "microsoft_Phi-4-mini-instruct-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_0.gguf" \
+  || DOWNLOAD_FAILED=1
+
+download_model \
+  "Qwen2.5 7B Q4_0" \
+  "Qwen2.5-7B-Instruct-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_0.gguf" \
+  || DOWNLOAD_FAILED=1
+
+download_model \
+  "Qwen3 8B Q4_0" \
+  "Qwen3-8B-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_0.gguf" \
+  || DOWNLOAD_FAILED=1
+
+download_model \
+  "Qwen2.5 Coder 7B Q4_0" \
+  "Qwen2.5-Coder-7B-Instruct-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_0.gguf" \
+  || DOWNLOAD_FAILED=1
+
+download_model \
+  "Gemma 3 12B Q4_0" \
+  "google_gemma-3-12b-it-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_0.gguf" \
+  || DOWNLOAD_FAILED=1
+
+download_model \
+  "DeepSeek R1 Qwen 14B Q4_0" \
+  "DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf" \
+  || DOWNLOAD_FAILED=1
+
+echo
+if [ "$DOWNLOAD_FAILED" = "1" ]; then
+  echo "⚠️  Au moins un modèle n'a pas fini de se télécharger."
+  echo "   Les fichiers .part sont conservés. Relance ~/start-ai.sh restart pour reprendre."
+  exit 1
+fi
+
+echo "✅ Les 6 modèles locaux sont présents."
 
 # --- Bibliothèques Qualcomm requises par le build Snapdragon sous Termux ---
 mkdir -p "$SNAP_LLAMA_DIR/lib"
@@ -355,7 +456,7 @@ echo "   🟣 Cohere      : Command A+"
 echo "   ▲ Vercel      : Ling 3.0 Flash VL Free"
 echo
 echo "💾 Un seul modèle local NPU est chargé à la fois ; les autres restent sur le stockage."
-echo "⬇️ Les modèles absents sont téléchargés et repris automatiquement au premier usage."
+echo "⬇️ Tous les modèles locaux sont pré-téléchargés au démarrage avec reprise automatique."
 echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
 echo
 
