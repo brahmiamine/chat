@@ -10,7 +10,7 @@ export function corsError(baseUrl: string): ChatError {
   try { host = new URL(baseUrl).host; } catch { /* keep raw */ }
   return {
     title: 'Le serveur répond, mais sa réponse est bloquée par le navigateur.',
-    hint: `Vérifiez d’abord l’URL (${host}) : un tunnel arrêté renvoie une page d’erreur Cloudflare. Sinon, llama-server n’autorise pas ${origin} : relancez-le avec --cors-origins ${origin}.`,
+    hint: `Vérifiez l’URL (${host}), le tunnel ngrok et la configuration CORS du router pour ${origin}.`,
   };
 }
 
@@ -30,23 +30,30 @@ export function friendlyError(e: unknown, baseUrl: string, reason: AbortReason =
     return { title: 'Le serveur met trop de temps à répondre.', hint: 'Le modèle est peut-être occupé ou surchargé. Réessayez dans un instant.' };
   }
   if (e instanceof StreamInterruptedError) {
-    return { title: 'La connexion a été coupée pendant la réponse.', hint: 'Le tunnel ou le réseau a interrompu le flux. Réessayez ; si cela se répète, vérifiez cloudflared.' };
+    return {
+      title: 'La connexion a été coupée pendant la réponse.',
+      hint: 'Lueur tente de reprendre le flux automatiquement. Vérifiez ngrok et le réseau si cela se répète.',
+    };
   }
   if (e instanceof LLMApiError) {
     const st = e.status;
-    if (st === 503) return { title: 'Le modèle n’est pas encore chargé.', hint: 'llama-server charge le modèle en mémoire. Réessayez dans quelques secondes.', http: true };
-    if (st === 401 || st === 403) return { title: 'Accès refusé par le serveur.', hint: 'Vérifiez la clé API dans Paramètres → Connexion.', http: true };
-    if (st === 404) return { title: 'Point d’accès introuvable.', hint: 'Vérifiez l’URL du serveur et le modèle dans Paramètres.', http: true };
+    if (/non configuré|\.lueur\.env|API_KEY|HF_TOKEN|CLOUDFLARE_/i.test(e.message)) {
+      return { title: 'Fournisseur cloud non configuré.', hint: e.message, http: true };
+    }
+    if (st === 503) return { title: 'Le modèle n’est pas encore chargé.', hint: 'Le modèle est encore en cours de chargement. Réessayez dans quelques secondes.', http: true };
+    if (st === 401 || st === 403) return { title: 'Accès refusé par le fournisseur.', hint: 'Vérifiez la clé du fournisseur côté Termux dans ~/.lueur.env.', http: true };
+    if (st === 404) return { title: 'Point d’accès ou modèle introuvable.', hint: 'Vérifiez le modèle sélectionné et la configuration du fournisseur.', http: true };
+    if (st === 429) return { title: 'Quota ou limite de débit atteint.', hint: 'Attendez un peu ou essayez un autre fournisseur/modèle.', http: true };
     if (st === 400) {
       return {
         title: 'Requête refusée par le serveur.',
         hint: /context|ctx|token/i.test(e.message)
-          ? 'La conversation dépasse la taille du contexte. Réduisez « Taille du contexte » ou démarrez une nouvelle conversation.'
-          : 'Les paramètres envoyés ne sont pas acceptés. Essayez de réinitialiser la génération.',
+          ? 'La conversation dépasse peut-être la taille du contexte. Réduisez le contexte ou démarrez une nouvelle conversation.'
+          : 'Les paramètres ou le format de la requête ne sont pas acceptés par ce modèle.',
         http: true,
       };
     }
-    return { title: `Erreur du serveur (HTTP ${st}).`, hint: 'Réessayez ou consultez les journaux du serveur.', http: true };
+    return { title: `Erreur du serveur (HTTP ${st}).`, hint: e.message || 'Réessayez ou consultez les journaux du router.', http: true };
   }
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return { title: 'Connexion réseau perdue.', hint: 'Vérifiez votre Wi-Fi puis réessayez.' };
@@ -54,11 +61,11 @@ export function friendlyError(e: unknown, baseUrl: string, reason: AbortReason =
   if (isMixedContent(baseUrl)) {
     return {
       title: 'Impossible de joindre le serveur IA.',
-      hint: 'Cette page est servie en HTTPS et le navigateur bloque les appels vers un serveur HTTP. Ouvrez l’application en local, ou exposez llama-server en HTTPS.',
+      hint: 'Cette page est servie en HTTPS et le navigateur bloque les appels vers un serveur HTTP. Utilisez l’URL HTTPS ngrok.',
       demo: true,
     };
   }
-  return { title: 'Impossible de joindre le serveur IA.', hint: 'Vérifiez que llama-server est démarré et accessible sur le réseau.', demo: true };
+  return { title: 'Impossible de joindre le serveur IA.', hint: 'Vérifiez que le router Lueur est démarré et accessible.', demo: true };
 }
 
 /** An HTTPS page cannot call an HTTP server: the browser blocks it before any request. */

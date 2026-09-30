@@ -10,14 +10,36 @@ const SMOL_MODEL_ID = 'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M';
 const DEEPSEEK_MODEL_ID = 'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M';
 const CODER_MODEL_ID = 'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M';
 
+const PROVIDER_LABELS = {
+  local: 'Local · llama.cpp',
+  groq: 'GroqCloud',
+  gemini: 'Google Gemini',
+  mistral: 'Mistral AI',
+  openrouter: 'OpenRouter',
+  cloudflare: 'Cloudflare Workers AI',
+  cerebras: 'Cerebras',
+  huggingface: 'Hugging Face Inference',
+} as const;
+
 export const DEFAULT_MODELS: ModelEntry[] = [
-  { id: DEFAULT_MODEL_ID, label: 'Qwen3.5 4B Vision' },
-  { id: GEMMA_MODEL_ID, label: 'Gemma 3 4B Vision' },
-  { id: PHI_MODEL_ID, label: 'Phi-4 Mini 3.8B' },
-  { id: LLAMA_MODEL_ID, label: 'Llama 3.2 3B' },
-  { id: SMOL_MODEL_ID, label: 'SmolLM3 3B' },
-  { id: DEEPSEEK_MODEL_ID, label: 'DeepSeek R1 1.5B' },
-  { id: CODER_MODEL_ID, label: 'Qwen2.5 Coder 3B' },
+  // Local GGUF
+  { id: DEFAULT_MODEL_ID, label: 'Qwen3.5 4B Vision', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: GEMMA_MODEL_ID, label: 'Gemma 3 4B Vision', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: PHI_MODEL_ID, label: 'Phi-4 Mini 3.8B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: LLAMA_MODEL_ID, label: 'Llama 3.2 3B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: SMOL_MODEL_ID, label: 'SmolLM3 3B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: DEEPSEEK_MODEL_ID, label: 'DeepSeek R1 1.5B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  { id: CODER_MODEL_ID, label: 'Qwen2.5 Coder 3B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+
+  // Cloud providers proxied securely by the Termux router.
+  { id: 'groq::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
+  { id: 'groq::qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
+  { id: 'gemini::gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'gemini', providerLabel: PROVIDER_LABELS.gemini },
+  { id: 'mistral::mistral-small-latest', label: 'Mistral Small', provider: 'mistral', providerLabel: PROVIDER_LABELS.mistral },
+  { id: 'openrouter::openrouter/free', label: 'OpenRouter Free', provider: 'openrouter', providerLabel: PROVIDER_LABELS.openrouter },
+  { id: 'cloudflare::@cf/openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cloudflare', providerLabel: PROVIDER_LABELS.cloudflare },
+  { id: 'cerebras::gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cerebras', providerLabel: PROVIDER_LABELS.cerebras },
+  { id: 'huggingface::deepseek-ai/DeepSeek-R1:fastest', label: 'DeepSeek R1', provider: 'huggingface', providerLabel: PROVIDER_LABELS.huggingface },
 ];
 
 export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 1024, contextSize: 4096 };
@@ -33,7 +55,7 @@ export function isServedByLlamaServer(): boolean {
   return !/\.github\.io$/i.test(location.hostname) && location.port !== '4173';
 }
 
-const REMOTE_DEFAULT_URL = env.VITE_LLM_BASE_URL || 'https://below-cancer-loads-dat.trycloudflare.com';
+const REMOTE_DEFAULT_URL = env.VITE_LLM_BASE_URL || 'https://expansile-ramiro-intertribal.ngrok-free.dev';
 
 export const DEFAULT_SETTINGS: Settings = {
   provider: 'openai-compatible',
@@ -56,11 +78,18 @@ const LEGACY_DEFAULT_MODELS = new Set([
 
 function migrateDefaultModel(s: Settings): Settings {
   const modelId = LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId;
-  const models = (s.models || [])
+  const models: ModelEntry[] = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
-    .map(m => ({ ...m }));
+    .map((m): ModelEntry => {
+      const builtin = DEFAULT_MODELS.find(x => x.id === m.id);
+      // Enrich settings saved by older versions with provider metadata while
+      // preserving any custom display label chosen by the user.
+      return builtin
+        ? { ...builtin, ...m, provider: builtin.provider, providerLabel: builtin.providerLabel }
+        : { ...m, provider: m.provider || 'custom' };
+    });
 
-  // Keep the two phone-friendly router models available in the selector,
+  // Keep all built-in local + cloud router models available in the selector,
   // including for users who already have settings saved locally.
   for (const builtin of [...DEFAULT_MODELS].reverse()) {
     if (!models.some(m => m.id === builtin.id)) models.unshift(builtin);
@@ -72,7 +101,11 @@ function migrateDefaultModel(s: Settings): Settings {
 }
 
 /** Former built-in defaults: a saved value equal to one of these follows the current default. */
-const PREVIOUS_DEFAULT_URLS = ['http://192.168.1.98:8080', 'https://searched-track-dsc-perhaps.trycloudflare.com'];
+const PREVIOUS_DEFAULT_URLS = [
+  'http://192.168.1.98:8080',
+  'https://searched-track-dsc-perhaps.trycloudflare.com',
+  'https://below-cancer-loads-dat.trycloudflare.com',
+];
 
 export function loadSettings(): Settings {
   try {
@@ -94,7 +127,8 @@ export function saveSettings(s: Settings) {
 
 /** "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M" → "Qwen3.5 4B". */
 export function prettyModel(id: string): string {
-  const s = String(id || '').split('/').pop()!.replace(/\.gguf$/i, '').replace(/[:@].*$/, '').replace(/-GGUF.*$/i, '');
+  const raw = String(id || '').replace(/^[a-z]+::/i, '');
+  const s = raw.split('/').pop()!.replace(/\.gguf$/i, '').replace(/[:@].*$/, '').replace(/-GGUF.*$/i, '');
   const m = s.match(/^([A-Za-z]+[\d.]*)[-_ ]?(\d+(?:\.\d+)?[BbMm])\b/);
   if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' ' + m[2].toUpperCase();
   return s.replace(/[-_]+/g, ' ').trim() || 'Modèle local';
@@ -106,5 +140,5 @@ export function modelLabel(m: ModelEntry): string {
 
 export function currentModel(s: Settings): ModelEntry {
   const m = s.models.find(x => x.id === s.modelId) || s.models[0] || { id: s.modelId, label: '' };
-  return { id: m.id, label: modelLabel(m) };
+  return { ...m, label: modelLabel(m) };
 }

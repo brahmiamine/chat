@@ -45,14 +45,138 @@ LLAMA_BIN = LLAMA_DIR / "build" / "bin" / "llama-server"
 MODEL_LOG = Path(os.environ.get("LUEUR_MODEL_LOG", str(Path.home() / "llama-model.log")))
 DEFAULT_MODEL = "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
 
+PROVIDERS: dict[str, dict[str, object]] = {
+    "local": {
+        "label": "Local · llama.cpp",
+        "base_url": "",
+        "required_env": [],
+    },
+    "groq": {
+        "label": "GroqCloud",
+        "base_url": "https://api.groq.com/openai/v1",
+        "required_env": ["GROQ_API_KEY"],
+    },
+    "gemini": {
+        "label": "Google Gemini",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "required_env": ["GEMINI_API_KEY"],
+    },
+    "mistral": {
+        "label": "Mistral AI",
+        "base_url": "https://api.mistral.ai/v1",
+        "required_env": ["MISTRAL_API_KEY"],
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "required_env": ["OPENROUTER_API_KEY"],
+    },
+    "cloudflare": {
+        "label": "Cloudflare Workers AI",
+        "base_url": "",
+        "required_env": ["CLOUDFLARE_AI_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+    },
+    "cerebras": {
+        "label": "Cerebras",
+        "base_url": "https://api.cerebras.ai/v1",
+        "required_env": ["CEREBRAS_API_KEY"],
+    },
+    "huggingface": {
+        "label": "Hugging Face Inference",
+        "base_url": "https://router.huggingface.co/v1",
+        "required_env": ["HF_TOKEN"],
+    },
+}
+
 MODELS: dict[str, dict[str, object]] = {
-    DEFAULT_MODEL: {"label": "Qwen3.5 4B Vision", "vision": True, "thinking": True},
-    "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M": {"label": "Gemma 3 4B Vision", "vision": True},
-    "bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M": {"label": "Phi-4 Mini 3.8B", "vision": False},
-    "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M": {"label": "Llama 3.2 3B", "vision": False},
-    "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M": {"label": "SmolLM3 3B", "vision": False, "thinking": True},
-    "bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M": {"label": "DeepSeek R1 1.5B", "vision": False},
-    "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M": {"label": "Qwen2.5 Coder 3B", "vision": False},
+    # Local GGUF models
+    DEFAULT_MODEL: {
+        "label": "Qwen3.5 4B Vision",
+        "provider": "local",
+        "vision": True,
+        "thinking": True,
+    },
+    "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M": {
+        "label": "Gemma 3 4B Vision",
+        "provider": "local",
+        "vision": True,
+    },
+    "bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M": {
+        "label": "Phi-4 Mini 3.8B",
+        "provider": "local",
+        "vision": False,
+    },
+    "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M": {
+        "label": "Llama 3.2 3B",
+        "provider": "local",
+        "vision": False,
+    },
+    "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M": {
+        "label": "SmolLM3 3B",
+        "provider": "local",
+        "vision": False,
+        "thinking": True,
+    },
+    "bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M": {
+        "label": "DeepSeek R1 1.5B",
+        "provider": "local",
+        "vision": False,
+    },
+    "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M": {
+        "label": "Qwen2.5 Coder 3B",
+        "provider": "local",
+        "vision": False,
+    },
+
+    # Cloud models. Prefixing the id avoids collisions between providers.
+    "groq::openai/gpt-oss-120b": {
+        "label": "GPT-OSS 120B",
+        "provider": "groq",
+        "remote_id": "openai/gpt-oss-120b",
+        "vision": False,
+    },
+    "groq::qwen/qwen3.8-27b": {
+        "label": "Qwen 3.8 27B",
+        "provider": "groq",
+        "remote_id": "qwen/qwen3.8-27b",
+        "vision": True,
+    },
+    "gemini::gemini-3.8-flash": {
+        "label": "Gemini 3.8 Flash",
+        "provider": "gemini",
+        "remote_id": "gemini-3.8-flash",
+        "vision": True,
+    },
+    "mistral::mistral-small-latest": {
+        "label": "Mistral Small",
+        "provider": "mistral",
+        "remote_id": "mistral-small-latest",
+        "vision": False,
+    },
+    "openrouter::openrouter/free": {
+        "label": "OpenRouter Free",
+        "provider": "openrouter",
+        "remote_id": "openrouter/free",
+        "vision": True,
+    },
+    "cloudflare::@cf/openai/gpt-oss-120b": {
+        "label": "GPT-OSS 120B",
+        "provider": "cloudflare",
+        "remote_id": "@cf/openai/gpt-oss-120b",
+        "vision": False,
+    },
+    "cerebras::gpt-oss-120b": {
+        "label": "GPT-OSS 120B",
+        "provider": "cerebras",
+        "remote_id": "gpt-oss-120b",
+        "vision": False,
+    },
+    "huggingface::deepseek-ai/DeepSeek-R1:fastest": {
+        "label": "DeepSeek R1",
+        "provider": "huggingface",
+        "remote_id": "deepseek-ai/DeepSeek-R1:fastest",
+        "vision": False,
+    },
 }
 
 ALLOWED_ORIGIN = "https://brahmiamine.github.io"
@@ -162,24 +286,14 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
                 model_id = DEFAULT_MODEL
                 upstream["model"] = model_id
 
-            ensure_model(model_id)
-
             if job.cancelled:
                 set_job_terminal(job, "stopped")
                 return
 
-            conn = http.client.HTTPConnection(MODEL_HOST, MODEL_PORT, timeout=3600)
+            conn, res = open_completion(model_id, upstream)
             with job.cond:
                 job.conn = conn
 
-            raw = json.dumps(upstream, ensure_ascii=False).encode("utf-8")
-            conn.request(
-                "POST",
-                "/v1/chat/completions",
-                body=raw,
-                headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-            )
-            res = conn.getresponse()
             if res.status >= 400:
                 detail = res.read().decode("utf-8", "replace")
                 raise RuntimeError(detail or f"HTTP {res.status}")
@@ -263,6 +377,112 @@ def log(message: str) -> None:
     print(time.strftime("[%H:%M:%S]"), message, flush=True)
 
 
+def provider_name(model_id: str) -> str:
+    meta = MODELS.get(model_id) or {}
+    return str(meta.get("provider") or "local")
+
+
+def provider_statuses() -> dict[str, dict[str, object]]:
+    out: dict[str, dict[str, object]] = {}
+    for pid, meta in PROVIDERS.items():
+        required = [str(x) for x in meta.get("required_env", [])]
+        missing = [name for name in required if not os.environ.get(name)]
+        out[pid] = {
+            "id": pid,
+            "label": meta["label"],
+            "configured": not missing,
+            "missing": missing,
+        }
+    return out
+
+
+def provider_base_url(provider: str) -> str:
+    if provider == "cloudflare":
+        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+        if not account_id:
+            raise RuntimeError(
+                "Cloudflare Workers AI non configuré: ajoute CLOUDFLARE_ACCOUNT_ID dans ~/.lueur.env"
+            )
+        return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    return str(PROVIDERS[provider].get("base_url") or "")
+
+
+def provider_headers(provider: str) -> dict[str, str]:
+    statuses = provider_statuses()
+    state = statuses.get(provider)
+    if not state:
+        raise RuntimeError(f"Fournisseur inconnu: {provider}")
+    if not state["configured"]:
+        missing = ", ".join(state["missing"])
+        raise RuntimeError(
+            f"{state['label']} non configuré. Ajoute {missing} dans ~/.lueur.env puis relance start-ai.sh"
+        )
+
+    if provider == "local":
+        return {"Content-Type": "application/json", "Accept": "text/event-stream"}
+
+    key_env = {
+        "groq": "GROQ_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "mistral": "MISTRAL_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "cloudflare": "CLOUDFLARE_AI_API_TOKEN",
+        "cerebras": "CEREBRAS_API_KEY",
+        "huggingface": "HF_TOKEN",
+    }[provider]
+    headers = {
+        "Authorization": f"Bearer {os.environ.get(key_env, '')}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "https://github.com/brahmiamine/chat"
+        headers["X-Title"] = "Lueur"
+    return headers
+
+
+def open_completion(
+    model_id: str,
+    body: dict,
+    keepalive: Callable[[], None] | None = None,
+) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    if model_id == "local":
+        model_id = DEFAULT_MODEL
+    if model_id not in MODELS:
+        raise ValueError(f"Modèle inconnu: {model_id}")
+
+    meta = MODELS[model_id]
+    provider = str(meta.get("provider") or "local")
+    upstream = dict(body)
+    upstream.pop("_lueur_job_id", None)
+    upstream.pop("_lueur_cursor", None)
+    upstream["stream"] = bool(body.get("stream", False))
+
+    if provider == "local":
+        upstream["model"] = model_id
+        ensure_model(model_id, keepalive)
+        conn: http.client.HTTPConnection = http.client.HTTPConnection(
+            MODEL_HOST, MODEL_PORT, timeout=3600
+        )
+        path = "/v1/chat/completions"
+        headers = provider_headers("local")
+    else:
+        # Cloud inference does not need a GGUF model occupying phone RAM.
+        stop_model()
+        upstream["model"] = str(meta.get("remote_id") or model_id)
+        base = provider_base_url(provider)
+        headers = provider_headers(provider)
+        parsed = urllib.parse.urlsplit(base)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise RuntimeError(f"URL fournisseur invalide: {base}")
+        conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=3600)
+        path = parsed.path.rstrip("/") + "/chat/completions"
+
+    raw = json.dumps(upstream, ensure_ascii=False).encode("utf-8")
+    conn.request("POST", path, body=raw, headers=headers)
+    return conn, conn.getresponse()
+
+
 def model_health() -> bool:
     try:
         with urllib.request.urlopen(f"http://{MODEL_HOST}:{MODEL_PORT}/health", timeout=2) as res:
@@ -308,6 +528,13 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
     if model_id not in MODELS:
         raise ValueError(f"Modèle inconnu: {model_id}")
 
+    meta = MODELS[model_id]
+    if str(meta.get("provider") or "local") != "local":
+        # Selecting a cloud model releases local llama.cpp RAM.
+        with _model_lock:
+            stop_model()
+        return
+
     with _model_lock:
         if _active_model == model_id and _model_proc and _model_proc.poll() is None and model_health():
             return
@@ -317,7 +544,6 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
         if not LLAMA_BIN.exists():
             raise RuntimeError(f"llama-server introuvable: {LLAMA_BIN}")
 
-        meta = MODELS[model_id]
         args = [
             str(LLAMA_BIN),
             "-hf", model_id,
@@ -421,13 +647,21 @@ class RouterHandler(BaseHTTPRequestHandler):
                 "router": "termux-python",
                 "active_model": active_model(),
                 "background_generations": True,
+                "providers": provider_statuses(),
             })
             return
 
         if path == "/models":
             self._json(200, {
                 "models": [
-                    {"id": mid, "label": meta["label"], "vision": meta["vision"]}
+                    {
+                        "id": mid,
+                        "label": meta["label"],
+                        "vision": meta["vision"],
+                        "provider": meta.get("provider", "local"),
+                        "provider_label": PROVIDERS[str(meta.get("provider") or "local")]["label"],
+                        "configured": provider_statuses()[str(meta.get("provider") or "local")]["configured"],
+                    }
                     for mid, meta in MODELS.items()
                 ],
                 "active_model": active_model(),
@@ -438,7 +672,11 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(200, {
                 "object": "list",
                 "data": [
-                    {"id": mid, "object": "model", "owned_by": "local"}
+                    {
+                        "id": mid,
+                        "object": "model",
+                        "owned_by": provider_name(mid),
+                    }
                     for mid in MODELS
                 ],
             })
@@ -450,7 +688,12 @@ class RouterHandler(BaseHTTPRequestHandler):
                 "n_ctx": CTX,
                 "default_generation_settings": {"n_ctx": CTX},
                 "router": "termux-python",
+                "providers": provider_statuses(),
             })
+            return
+
+        if path == "/providers":
+            self._json(200, {"providers": provider_statuses()})
             return
 
         if path.startswith("/lueur/generations/"):
@@ -536,7 +779,12 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": f"Modèle inconnu: {model_id}"}})
             return
 
-        if not THINKING and MODELS[model_id].get("thinking") and "chat_template_kwargs" not in body:
+        if (
+            provider_name(model_id) == "local"
+            and not THINKING
+            and MODELS[model_id].get("thinking")
+            and "chat_template_kwargs" not in body
+        ):
             body["chat_template_kwargs"] = {"enable_thinking": False}
 
         if stream:
@@ -565,8 +813,7 @@ class RouterHandler(BaseHTTPRequestHandler):
 
             try:
                 keepalive()
-                ensure_model(model_id, keepalive)
-                self._proxy_stream(body)
+                self._proxy_stream(body, keepalive)
             except BrokenPipeError:
                 return
             except Exception as e:
@@ -580,7 +827,6 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            ensure_model(model_id)
             self._proxy_json(body)
         except ValueError as e:
             self._json(400, {"error": {"message": str(e)}})
@@ -642,41 +888,40 @@ class RouterHandler(BaseHTTPRequestHandler):
         finally:
             self.close_connection = True
 
-    def _proxy_stream(self, body: dict) -> None:
-        conn = http.client.HTTPConnection(MODEL_HOST, MODEL_PORT, timeout=3600)
+    def _proxy_stream(
+        self,
+        body: dict,
+        keepalive: Callable[[], None] | None = None,
+    ) -> None:
+        model_id = str(body.get("model") or DEFAULT_MODEL)
+        conn: http.client.HTTPConnection | None = None
         try:
-            raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            conn.request(
-                "POST",
-                "/v1/chat/completions",
-                body=raw,
-                headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-            )
-            res = conn.getresponse()
+            conn, res = open_completion(model_id, body, keepalive)
             if res.status >= 400:
                 detail = res.read().decode("utf-8", "replace")
-                payload = json.dumps({"error": {"message": detail or f"HTTP {res.status}"}}, ensure_ascii=False)
+                payload = json.dumps(
+                    {"error": {"message": detail or f"HTTP {res.status}"}},
+                    ensure_ascii=False,
+                )
                 self.wfile.write(f"data: {payload}\n\ndata: [DONE]\n\n".encode("utf-8"))
                 self.wfile.flush()
                 return
 
             while True:
-                # read1 renvoie dès qu'un morceau arrive ; read(4096) attendrait
-                # d'avoir 4 Ko, soit des dizaines de tokens bufferisés.
                 chunk = res.read1(4096)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def _proxy_json(self, body: dict) -> None:
-        conn = http.client.HTTPConnection(MODEL_HOST, MODEL_PORT, timeout=3600)
+        model_id = str(body.get("model") or DEFAULT_MODEL)
+        conn: http.client.HTTPConnection | None = None
         try:
-            raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            conn.request("POST", "/v1/chat/completions", body=raw, headers={"Content-Type": "application/json"})
-            res = conn.getresponse()
+            conn, res = open_completion(model_id, body)
             payload = res.read()
             self.send_response(res.status)
             self.send_header("Content-Type", res.getheader("Content-Type", "application/json"))
@@ -685,7 +930,8 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def _serve_static(self, url_path: str) -> None:
         if not UI_DIR.exists():
@@ -758,7 +1004,9 @@ def main() -> int:
 
     log(f"Lueur router: http://{HOST}:{PORT}")
     log(f"llama-server interne: http://{MODEL_HOST}:{MODEL_PORT}")
-    log(f"Modèles: {len(MODELS)} (1 chargé à la fois)")
+    configured = sum(1 for p in provider_statuses().values() if p["configured"])
+    log(f"Modèles: {len(MODELS)} · fournisseurs configurés: {configured}/{len(PROVIDERS)}")
+    log("Le local garde un seul modèle GGUF en RAM; les modèles cloud passent par le router.")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
