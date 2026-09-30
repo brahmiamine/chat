@@ -85,13 +85,13 @@ const MODELS = {
     provider: 'local',
     vision: false,
   },
-  'local::gemma3-12b-q4_0': {
-    label: 'Gemma 3 12B · Snapdragon NPU',
+  'local::qwen3.5-9b-q4_0': {
+    label: 'Qwen3.5 9B · Snapdragon NPU',
     provider: 'local',
     vision: false,
   },
-  'local::deepseek-r1-qwen-14b-q4_0': {
-    label: 'DeepSeek R1 Qwen 14B · Snapdragon NPU',
+  'local::deepseek-r1-qwen-7b-q4_0': {
+    label: 'DeepSeek R1 Qwen 7B · Snapdragon NPU',
     provider: 'local',
     vision: false,
   },
@@ -203,6 +203,8 @@ const MODELS = {
 };
 
 const MODEL_ALIASES = {
+  'local::gemma3-12b-q4_0': 'local::qwen3.5-9b-q4_0',
+  'local::deepseek-r1-qwen-14b-q4_0': 'local::deepseek-r1-qwen-7b-q4_0',
   'nvidia::openai/gpt-oss-120b': 'nvidia::openai/gpt-oss-20b',
   'nvidia::deepseek-ai/deepseek-v4-flash': 'nvidia::deepseek-ai/deepseek-v4.1-flash',
   'nvidia::qwen/qwen3-next-80b-a3b-instruct': 'nvidia::z-ai/glm-5.3',
