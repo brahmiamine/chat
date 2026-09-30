@@ -210,9 +210,6 @@ export MISTRAL_API_KEY='...'
 # OpenRouter
 export OPENROUTER_API_KEY='...'
 
-# Cerebras
-export CEREBRAS_API_KEY='...'
-
 # Hugging Face Inference Providers
 export HF_TOKEN='...'
 
@@ -248,7 +245,6 @@ Les modèles intégrés dans l'interface sont actuellement :
 | Mistral AI | Mistral Small | `mistral-small-latest` |
 | OpenRouter | OpenRouter Free | `openrouter/free` |
 | Cloudflare Workers AI | GPT-OSS 120B | `@cf/openai/gpt-oss-120b` |
-| Cerebras | GPT-OSS 120B | `gpt-oss-120b` |
 | Hugging Face | DeepSeek R1 | `deepseek-ai/DeepSeek-R1:fastest` |
 | NVIDIA NIM | GPT-OSS 120B | `openai/gpt-oss-120b` |
 | NVIDIA NIM | DeepSeek V4 Flash | `deepseek-ai/deepseek-v4-flash` |
@@ -284,7 +280,7 @@ router Python
    ↓                                                    ↓
 llama-server :8081                            APIs cloud sécurisées
    ↓                                  Groq / Gemini / Mistral / OpenRouter
-1 GGUF local à la fois                 Workers AI / Cerebras / Hugging Face
+1 GGUF local à la fois                 Workers AI / Hugging Face
                                        NVIDIA / Cohere / Vercel AI Gateway
 ```
 
