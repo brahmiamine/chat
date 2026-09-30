@@ -30,6 +30,7 @@ export interface BackgroundGeneration {
   content: string;
   cursor: number;
   error?: string | null;
+  error_code?: number | null;
   updated_at?: number;
 }
 
