@@ -20,3 +20,5 @@ jobs:
       - run: npm run build
       - name: Validate Python router syntax
         run: python3 -m py_compile scripts/model-router.py
+      - name: Validate Cloudflare Worker syntax
+        run: node --check worker/index.js

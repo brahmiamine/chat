@@ -70,7 +70,7 @@ export function isServedByLlamaServer(): boolean {
   return !/\.github\.io$/i.test(location.hostname) && location.port !== '4173';
 }
 
-const REMOTE_DEFAULT_URL = env.VITE_LLM_BASE_URL || 'https://expansile-ramiro-intertribal.ngrok-free.dev';
+const REMOTE_DEFAULT_URL = env.VITE_LLM_BASE_URL || 'https://chat.testcivique.workers.dev';
 
 export const DEFAULT_SETTINGS: Settings = {
   provider: 'openai-compatible',
@@ -136,6 +136,7 @@ const PREVIOUS_DEFAULT_URLS = [
   'http://192.168.1.98:8080',
   'https://searched-track-dsc-perhaps.trycloudflare.com',
   'https://below-cancer-loads-dat.trycloudflare.com',
+  'https://expansile-ramiro-intertribal.ngrok-free.dev',
 ];
 
 export function loadSettings(): Settings {
