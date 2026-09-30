@@ -65,6 +65,11 @@ const PROVIDERS = {
 };
 
 const MODELS = {
+  'local::phi4-mini-3.8b-q4_0': {
+    label: 'Phi-4 Mini 3.8B · Snapdragon NPU',
+    provider: 'local',
+    vision: false,
+  },
   'local::qwen2.5-7b-instruct-q4_0': {
     label: 'Qwen2.5 7B · Snapdragon NPU',
     provider: 'local',
@@ -72,6 +77,21 @@ const MODELS = {
   },
   'local::qwen3-8b-q4_0': {
     label: 'Qwen3 8B · Snapdragon NPU',
+    provider: 'local',
+    vision: false,
+  },
+  'local::qwen2.5-coder-7b-q4_0': {
+    label: 'Qwen2.5 Coder 7B · Snapdragon NPU',
+    provider: 'local',
+    vision: false,
+  },
+  'local::gemma3-12b-q4_0': {
+    label: 'Gemma 3 12B · Snapdragon NPU',
+    provider: 'local',
+    vision: false,
+  },
+  'local::deepseek-r1-qwen-14b-q4_0': {
+    label: 'DeepSeek R1 Qwen 14B · Snapdragon NPU',
     provider: 'local',
     vision: false,
   },
