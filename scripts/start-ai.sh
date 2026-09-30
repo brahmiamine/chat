@@ -1,10 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Lueur + router Python Android + llama.cpp + ngrok via Debian proot
+# Lueur + router Python Android + Qwen2.5 7B Snapdragon NPU + ngrok via Debian proot
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
-# Le router Python garde un seul modèle GGUF local en RAM à la fois et peut
-# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, HF,
-# NVIDIA NIM, Cohere et Vercel AI Gateway.
+# Qwen2.5 7B Q4_0 tourne localement sur le backend Snapdragon Hexagon HTP0
+# (sans clé API locale). Le router peut aussi relayer les fournisseurs cloud.
 #
 # Usage :
 #   ~/start-ai.sh
@@ -14,10 +13,13 @@
 PORT=8080
 MODEL_PORT=8081
 CTX=4096
-THREADS="${LUEUR_THREADS:-4}"
+THREADS="${LUEUR_THREADS:-6}"
 
 UI_DIR="$HOME/lueur-ui"
 LLAMA_DIR="$HOME/llama.cpp"
+SNAP_LLAMA_DIR="${LUEUR_SNAP_LLAMA_DIR:-/data/local/tmp/llama.cpp}"
+LOCAL_MODEL_PATH="${LUEUR_LOCAL_MODEL_PATH:-/data/local/tmp/gguf/Qwen2.5-7B-Instruct-Q4_0.gguf}"
+LOCAL_MODEL_ID="${LUEUR_LOCAL_MODEL_ID:-local::qwen2.5-7b-instruct-q4_0}"
 ROUTER_SCRIPT="$HOME/lueur-router.py"
 
 ROUTER_LOG="$HOME/lueur-router.log"
@@ -63,6 +65,10 @@ CF_PAT='(^|/)cloudflared( |$)'
 
 health_ok() {
   curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
+}
+
+model_health_ok() {
+  curl -fsS -m 3 "http://127.0.0.1:$MODEL_PORT/health" 2>/dev/null | grep -q '"status":"ok"'
 }
 
 ui_ok() {
@@ -146,15 +152,14 @@ if ! command -v python >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -x "$LLAMA_DIR/build/bin/llama-server" ]; then
-  echo "❌ llama-server introuvable : $LLAMA_DIR/build/bin/llama-server"
-  echo
-  echo "Compile llama.cpp en mode Android normal :"
-  echo "  cd $LLAMA_DIR"
-  echo "  git pull --ff-only"
-  echo "  rm -rf build"
-  echo "  cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_SUBPROCESS=OFF"
-  echo "  cmake --build build -j2 --target llama-server"
+if [ ! -x "$SNAP_LLAMA_DIR/bin/llama-server" ]; then
+  echo "❌ Build Snapdragon llama-server introuvable : $SNAP_LLAMA_DIR/bin/llama-server"
+  echo "   Le build doit avoir été poussé avec scripts/snapdragon/build.py --target adb --push"
+  exit 1
+fi
+
+if [ ! -r "$LOCAL_MODEL_PATH" ]; then
+  echo "❌ Modèle Qwen introuvable : $LOCAL_MODEL_PATH"
   exit 1
 fi
 
@@ -181,6 +186,50 @@ if ! curl -fsSL https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/
 fi
 chmod +x "$ROUTER_SCRIPT"
 
+# --- Qwen2.5 7B sur Snapdragon Hexagon NPU (HTP0), sans clé API locale ---
+if model_health_ok; then
+  echo "✅ Qwen2.5 7B NPU déjà actif sur :$MODEL_PORT"
+else
+  stop_proc "$LS_PAT"
+  echo "🧠 Démarrage Qwen2.5 7B sur Hexagon HTP0..."
+  : > "$MODEL_LOG"
+
+  nohup env \
+    LD_LIBRARY_PATH="$SNAP_LLAMA_DIR/lib" \
+    ADSP_LIBRARY_PATH="$SNAP_LLAMA_DIR/lib" \
+    GGML_HEXAGON_DEVICES=HTP0 \
+    GGML_HEXAGON_OPPOLL=1 \
+    "$SNAP_LLAMA_DIR/bin/llama-server" \
+      -m "$LOCAL_MODEL_PATH" \
+      -ngl 99 \
+      -c "$CTX" \
+      --device HTP0 \
+      -fa on \
+      --ubatch-size 1024 \
+      -t "$THREADS" \
+      -np 1 \
+      --host 127.0.0.1 \
+      --port "$MODEL_PORT" \
+    > "$MODEL_LOG" 2>&1 < /dev/null &
+
+  echo "⏳ Chargement de Qwen2.5 7B sur le NPU..."
+  for _ in $(seq 1 180); do
+    model_health_ok && break
+    if ! pgrep -f "$LS_PAT" >/dev/null 2>&1; then
+      echo "❌ llama-server NPU s'est arrêté. Dernières lignes :"
+      tail -n 40 "$MODEL_LOG"
+      exit 1
+    fi
+    sleep 1
+  done
+
+  if ! model_health_ok; then
+    echo "❌ Qwen2.5 7B NPU n'est pas devenu disponible."
+    tail -n 40 "$MODEL_LOG"
+    exit 1
+  fi
+fi
+
 if health_ok && router_running; then
   echo "✅ Router IA déjà actif"
 else
@@ -200,6 +249,9 @@ else
     LUEUR_UI_DIR="$UI_DIR" \
     LUEUR_LLAMA_DIR="$LLAMA_DIR" \
     LUEUR_MODEL_LOG="$MODEL_LOG" \
+    LUEUR_EXTERNAL_LOCAL=1 \
+    LUEUR_EXTERNAL_LOCAL_ID="$LOCAL_MODEL_ID" \
+    LUEUR_DEFAULT_MODEL="$LOCAL_MODEL_ID" \
     GROQ_API_KEY="${GROQ_API_KEY:-}" \
     GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
     MISTRAL_API_KEY="${MISTRAL_API_KEY:-}" \
@@ -306,7 +358,7 @@ ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🤖 Modèles disponibles :"
-echo "   🏠 Local       : 7 modèles GGUF"
+echo "   🏠 Local NPU   : Qwen2.5 7B Instruct Q4_0 · Hexagon HTP0"
 echo "   ⚡ Groq        : GPT-OSS 120B, Qwen 3.8 27B"
 echo "   ✨ Gemini      : Gemini 3.8 Flash"
 echo "   🇫🇷 Mistral    : Mistral Small"
@@ -319,7 +371,7 @@ echo "                    GPT-OSS 20B, Gemma 4 31B, Muse Glimmer 30B"
 echo "   🟣 Cohere      : Command A+"
 echo "   ▲ Vercel      : Ling 3.0 Flash VL Free"
 echo
-echo "💾 Un seul modèle local est chargé en RAM à la fois."
+echo "💾 Qwen2.5 7B reste chargé localement sur le NPU pendant l'utilisation de Lueur."
 echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
 echo
 
