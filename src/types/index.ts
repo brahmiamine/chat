@@ -125,6 +125,9 @@ export type ModelProviderId =
   | 'cloudflare'
   | 'cerebras'
   | 'huggingface'
+  | 'nvidia'
+  | 'cohere'
+  | 'vercel'
   | 'custom';
 
 export interface ModelEntry {
