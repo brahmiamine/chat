@@ -17,7 +17,6 @@ const PROVIDER_LABELS = {
   mistral: 'Mistral AI',
   openrouter: 'OpenRouter',
   cloudflare: 'Cloudflare Workers AI',
-  cerebras: 'Cerebras',
   huggingface: 'Hugging Face Inference',
   nvidia: 'NVIDIA NIM',
   cohere: 'Cohere',
@@ -41,7 +40,6 @@ export const DEFAULT_MODELS: ModelEntry[] = [
   { id: 'mistral::mistral-small-latest', label: 'Mistral Small', provider: 'mistral', providerLabel: PROVIDER_LABELS.mistral },
   { id: 'openrouter::openrouter/free', label: 'OpenRouter Free', provider: 'openrouter', providerLabel: PROVIDER_LABELS.openrouter },
   { id: 'cloudflare::@cf/openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cloudflare', providerLabel: PROVIDER_LABELS.cloudflare },
-  { id: 'cerebras::gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cerebras', providerLabel: PROVIDER_LABELS.cerebras },
   { id: 'huggingface::deepseek-ai/DeepSeek-R1:fastest', label: 'DeepSeek R1', provider: 'huggingface', providerLabel: PROVIDER_LABELS.huggingface },
 
   // NVIDIA hosted free endpoints verified against the current NIM catalog.
@@ -94,6 +92,10 @@ const MODEL_REPLACEMENTS: Record<string, string> = {
   'nvidia::qwen/qwen3-next-80b-a3b-instruct': 'nvidia::z-ai/glm-5.3',
 };
 
+const REMOVED_MODELS = new Set([
+  'cerebras::gpt-oss-120b',
+]);
+
 const LEGACY_DEFAULT_MODELS = new Set([
   'mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M',
   'Qwen2.5-7B-Instruct-GGUF:Q4_K_M',
@@ -101,10 +103,14 @@ const LEGACY_DEFAULT_MODELS = new Set([
 ]);
 
 function migrateDefaultModel(s: Settings): Settings {
-  const modelId = MODEL_REPLACEMENTS[s.modelId]
-    || (LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId);
+  const selectedWasRemoved = REMOVED_MODELS.has(s.modelId) || s.modelId.startsWith('cerebras::');
+  const modelId = selectedWasRemoved
+    ? DEFAULT_MODEL_ID
+    : MODEL_REPLACEMENTS[s.modelId]
+      || (LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId);
   const models: ModelEntry[] = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
+    .filter(m => !REMOVED_MODELS.has(m.id) && !m.id.startsWith('cerebras::') && String(m.provider || '') !== 'cerebras')
     .map((m): ModelEntry => {
       const builtin = DEFAULT_MODELS.find(x => x.id === m.id);
       // Enrich settings saved by older versions with provider metadata while

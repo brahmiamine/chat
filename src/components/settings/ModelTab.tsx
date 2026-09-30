@@ -5,7 +5,7 @@ import type { ModelEntry, ModelProviderId } from '../../types';
 import type { SettingsModalProps } from './SettingsModal';
 
 const KNOWN_PROVIDERS = new Set<ModelProviderId>([
-  'local', 'groq', 'gemini', 'mistral', 'openrouter', 'cloudflare', 'cerebras', 'huggingface',
+  'local', 'groq', 'gemini', 'mistral', 'openrouter', 'cloudflare', 'huggingface',
   'nvidia', 'cohere', 'vercel',
 ]);
 
