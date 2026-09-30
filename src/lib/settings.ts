@@ -19,6 +19,9 @@ const PROVIDER_LABELS = {
   cloudflare: 'Cloudflare Workers AI',
   cerebras: 'Cerebras',
   huggingface: 'Hugging Face Inference',
+  nvidia: 'NVIDIA NIM',
+  cohere: 'Cohere',
+  vercel: 'Vercel AI Gateway',
 } as const;
 
 export const DEFAULT_MODELS: ModelEntry[] = [
@@ -40,6 +43,14 @@ export const DEFAULT_MODELS: ModelEntry[] = [
   { id: 'cloudflare::@cf/openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cloudflare', providerLabel: PROVIDER_LABELS.cloudflare },
   { id: 'cerebras::gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'cerebras', providerLabel: PROVIDER_LABELS.cerebras },
   { id: 'huggingface::deepseek-ai/DeepSeek-R1:fastest', label: 'DeepSeek R1', provider: 'huggingface', providerLabel: PROVIDER_LABELS.huggingface },
+
+  { id: 'nvidia::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::deepseek-ai/deepseek-v4-flash', label: 'DeepSeek V4 Flash', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+  { id: 'nvidia::qwen/qwen3-next-80b-a3b-instruct', label: 'Qwen3 Next 80B A3B', provider: 'nvidia', providerLabel: PROVIDER_LABELS.nvidia },
+
+  { id: 'cohere::command-a-plus-05-2026', label: 'Command A+', provider: 'cohere', providerLabel: PROVIDER_LABELS.cohere },
+
+  { id: 'vercel::inclusionai/ling-3.0-flash-vl', label: 'Ling 3.0 Flash VL Free', provider: 'vercel', providerLabel: PROVIDER_LABELS.vercel },
 ];
 
 export const GEN_DEFAULTS: GenerationSettings = { temperature: 0.7, topP: 0.8, maxTokens: 1024, contextSize: 4096 };
