@@ -216,6 +216,15 @@ export CEREBRAS_API_KEY='...'
 # Hugging Face Inference Providers
 export HF_TOKEN='...'
 
+# NVIDIA NIM
+export NVIDIA_API_KEY='...'
+
+# Cohere
+export COHERE_API_KEY='...'
+
+# Vercel AI Gateway
+export AI_GATEWAY_API_KEY='...'
+
 # Cloudflare Workers AI
 export CLOUDFLARE_ACCOUNT_ID='...'
 export CLOUDFLARE_AI_API_TOKEN='...'
@@ -241,8 +250,13 @@ Les modèles intégrés dans l'interface sont actuellement :
 | Cloudflare Workers AI | GPT-OSS 120B | `@cf/openai/gpt-oss-120b` |
 | Cerebras | GPT-OSS 120B | `gpt-oss-120b` |
 | Hugging Face | DeepSeek R1 | `deepseek-ai/DeepSeek-R1:fastest` |
+| NVIDIA NIM | GPT-OSS 120B | `openai/gpt-oss-120b` |
+| NVIDIA NIM | DeepSeek V4 Flash | `deepseek-ai/deepseek-v4-flash` |
+| NVIDIA NIM | Qwen3 Next 80B A3B | `qwen/qwen3-next-80b-a3b-instruct` |
+| Cohere | Command A+ | `command-a-plus-05-2026` |
+| Vercel AI Gateway | Ling 3.0 Flash VL Free | `inclusionai/ling-3.0-flash-vl` |
 
-Le navigateur continue à appeler uniquement le router Lueur. Celui-ci choisit automatiquement le bon fournisseur à partir du modèle sélectionné, conserve le streaming SSE et garde la génération en arrière-plan lorsque le navigateur est fermé.
+Le navigateur continue à appeler uniquement le router Lueur. Celui-ci choisit automatiquement le bon fournisseur à partir du modèle sélectionné, conserve le streaming SSE et garde la génération en arrière-plan lorsque le navigateur est fermé. Les clés restent côté Termux ; ne les ajoutez jamais au dépôt.
 
 Pour vérifier les fournisseurs configurés :
 
@@ -271,6 +285,7 @@ router Python
 llama-server :8081                            APIs cloud sécurisées
    ↓                                  Groq / Gemini / Mistral / OpenRouter
 1 GGUF local à la fois                 Workers AI / Cerebras / Hugging Face
+                                       NVIDIA / Cohere / Vercel AI Gateway
 ```
 
 Compilez `llama.cpp` en mode Android normal, sans subprocess :
