@@ -43,14 +43,11 @@ UI_DIR = Path(os.environ.get("LUEUR_UI_DIR", str(Path.home() / "lueur-ui"))).res
 LLAMA_DIR = Path(os.environ.get("LUEUR_LLAMA_DIR", str(Path.home() / "llama.cpp"))).resolve()
 LLAMA_BIN = LLAMA_DIR / "build" / "bin" / "llama-server"
 MODEL_LOG = Path(os.environ.get("LUEUR_MODEL_LOG", str(Path.home() / "llama-model.log")))
-EXTERNAL_LOCAL = os.environ.get("LUEUR_EXTERNAL_LOCAL", "0") == "1"
+EXTERNAL_LOCAL = os.environ.get("LUEUR_EXTERNAL_LOCAL", "1") == "1"
 EXTERNAL_LOCAL_ID = os.environ.get(
     "LUEUR_EXTERNAL_LOCAL_ID", "local::qwen2.5-7b-instruct-q4_0"
 )
-DEFAULT_MODEL = os.environ.get(
-    "LUEUR_DEFAULT_MODEL",
-    EXTERNAL_LOCAL_ID if EXTERNAL_LOCAL else "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M",
-)
+DEFAULT_MODEL = os.environ.get("LUEUR_DEFAULT_MODEL", EXTERNAL_LOCAL_ID)
 
 PROVIDERS: dict[str, dict[str, object]] = {
     "local": {
@@ -106,47 +103,9 @@ PROVIDERS: dict[str, dict[str, object]] = {
 }
 
 MODELS: dict[str, dict[str, object]] = {
-    # Local Snapdragon NPU model managed by start-ai.sh
+    # Unique modèle local : Qwen2.5 7B sur Snapdragon Hexagon HTP0.
     EXTERNAL_LOCAL_ID: {
         "label": "Qwen2.5 7B · Snapdragon NPU",
-        "provider": "local",
-        "vision": False,
-    },
-    # Legacy Termux-managed local GGUF models
-    "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M": {
-        "label": "Qwen3.5 4B Vision",
-        "provider": "local",
-        "vision": True,
-        "thinking": True,
-    },
-    "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M": {
-        "label": "Gemma 3 4B Vision",
-        "provider": "local",
-        "vision": True,
-    },
-    "bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M": {
-        "label": "Phi-4 Mini 3.8B",
-        "provider": "local",
-        "vision": False,
-    },
-    "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M": {
-        "label": "Llama 3.2 3B",
-        "provider": "local",
-        "vision": False,
-    },
-    "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M": {
-        "label": "SmolLM3 3B",
-        "provider": "local",
-        "vision": False,
-        "thinking": True,
-    },
-    "bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M": {
-        "label": "DeepSeek R1 1.5B",
-        "provider": "local",
-        "vision": False,
-    },
-    "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M": {
-        "label": "Qwen2.5 Coder 3B",
         "provider": "local",
         "vision": False,
     },
@@ -257,15 +216,6 @@ MODELS: dict[str, dict[str, object]] = {
         "vision": True,
     },
 }
-
-if EXTERNAL_LOCAL:
-    # The external Snapdragon server has one model loaded. Hide legacy local
-    # choices so the UI cannot request a different GGUF from that same port.
-    MODELS = {
-        mid: meta
-        for mid, meta in MODELS.items()
-        if str(meta.get("provider") or "local") != "local" or mid == EXTERNAL_LOCAL_ID
-    }
 
 MODEL_ALIASES = {
     "nvidia::openai/gpt-oss-120b": "nvidia::openai/gpt-oss-20b",
