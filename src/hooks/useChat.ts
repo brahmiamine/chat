@@ -209,6 +209,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
 
     let status: MessageStatus = 'done';
     let error: ChatError | null = null;
+    let detached = false;
     arm();
 
     try {
@@ -275,7 +276,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       } else if (ctrl.signal.aborted && current.background) {
         // Page destruction detaches the browser but must not overwrite the
         // persisted "streaming" state; the job will be recovered next launch.
-        return;
+        detached = true;
       } else {
         status = 'error';
         error = await diagnoseError(e, s.baseUrl, current.reason);
@@ -283,6 +284,12 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     } finally {
       clearTimeout(timer);
       if (raf) cancelAnimationFrame(raf);
+    }
+
+    if (detached) {
+      if (run.current === current) run.current = null;
+      setLive(null);
+      return;
     }
 
     full += pending;
