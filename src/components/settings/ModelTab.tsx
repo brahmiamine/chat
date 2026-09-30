@@ -6,7 +6,7 @@ import type { SettingsModalProps } from './SettingsModal';
 
 const KNOWN_PROVIDERS = new Set<ModelProviderId>([
   'local', 'groq', 'gemini', 'mistral', 'openrouter', 'cloudflare', 'huggingface',
-  'nvidia', 'cohere', 'vercel',
+  'nvidia', 'cohere', 'vercel', 'modal',
 ]);
 
 function inferredProvider(id: string): ModelProviderId {
@@ -71,8 +71,8 @@ export function ModelTab({ settings: s, update, loadServerInfo, server }: Settin
       <div>
         <div className="s-label tight">Modèles</div>
         <div className="s-help">
-          Les modèles locaux tournent sur le téléphone. Les modèles cloud passent par le router Termux :
-          les clés restent dans <code>~/.lueur.env</code>, jamais dans le navigateur.
+          Les modèles locaux restent sur le téléphone via Termux. Modal et les autres fournisseurs cloud
+          passent par le gateway Cloudflare ; leurs clés restent côté serveur, jamais dans le navigateur.
         </div>
         <div className="settings-provider-groups">
           {groups.map(group => {
