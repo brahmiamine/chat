@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#161514" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Lueur" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <title>Lueur</title>
+    <style>#app-splash{z-index:9999;color:#1d1b18;background:#fbfaf7;place-items:center;transition:opacity .18s,visibility .18s;display:grid;position:fixed;inset:0}#app-splash .splash-inner{justify-items:center;gap:14px;display:grid}#app-splash img{filter:drop-shadow(0 10px 24px #c2562f38);width:72px;height:72px}#app-splash span{letter-spacing:-.02em;font:600 20px/1 system-ui,sans-serif}#app-splash.done{opacity:0;visibility:hidden}@media (prefers-color-scheme:dark){#app-splash{color:#ebe7e0;background:#161514}}</style>
+    <script>
+      // Apply the saved theme before first paint to avoid a light/dark flash.
+      try {
+        var s = JSON.parse(localStorage.getItem('lueur.settings') || '{}');
+        var t = s.theme || 'system';
+        var dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        if (s.fontSize) document.documentElement.style.setProperty('--fs', s.fontSize + 'px');
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="./assets/index-CJOlInu9.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Cj4MFUvC.css">
+  </head>
+  <body>
+    <div id="app-splash" role="status" aria-label="Chargement de Lueur">
+      <div class="splash-inner">
+        <img src="./logo.svg" alt="" />
+        <span>Lueur</span>
+      </div>
+    </div>
+    <div id="root"></div>
+  </body>
+</html>
