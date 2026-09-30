@@ -196,12 +196,30 @@ _jobs: dict[str, "GenerationJob"] = {}
 JOB_TTL = 3600
 
 
+def upstream_error_message(raw: str, status: int) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return f"HTTP {status}"
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return str(err["message"])
+            if data.get("message"):
+                return str(data["message"])
+    except Exception:
+        pass
+    return text
+
+
 class GenerationJob:
     def __init__(self, job_id: str) -> None:
         self.id = job_id
         self.content = ""
         self.status = "running"  # running | done | stopped | error
         self.error: str | None = None
+        self.error_code: int | None = None
         self.cancelled = False
         self.updated_at = time.time()
         self.cond = threading.Condition()
@@ -215,6 +233,7 @@ class GenerationJob:
                 "content": self.content,
                 "cursor": len(self.content),
                 "error": self.error,
+                "error_code": self.error_code,
                 "updated_at": self.updated_at,
             }
 
@@ -255,14 +274,21 @@ def cancel_job(job_id: str) -> bool:
     return True
 
 
-def set_job_terminal(job: GenerationJob, status: str, error: str | None = None) -> None:
+def set_job_terminal(
+    job: GenerationJob,
+    status: str,
+    error: str | None = None,
+    error_code: int | None = None,
+) -> None:
     with job.cond:
         if job.cancelled:
             job.status = "stopped"
             job.error = None
+            job.error_code = None
         else:
             job.status = status
             job.error = error
+            job.error_code = error_code
         job.updated_at = time.time()
         job.cond.notify_all()
 
@@ -296,7 +322,13 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
 
             if res.status >= 400:
                 detail = res.read().decode("utf-8", "replace")
-                raise RuntimeError(detail or f"HTTP {res.status}")
+                set_job_terminal(
+                    job,
+                    "error",
+                    upstream_error_message(detail, res.status),
+                    res.status,
+                )
+                return
 
             while not job.cancelled:
                 line = res.readline()
@@ -848,12 +880,14 @@ class RouterHandler(BaseHTTPRequestHandler):
                     content = job.content
                     status = job.status
                     error = job.error
+                    error_code = job.error_code
 
                     if len(content) <= cursor and status == "running":
                         job.cond.wait(timeout=10)
                         content = job.content
                         status = job.status
                         error = job.error
+                        error_code = job.error_code
 
                 if len(content) > cursor:
                     delta = content[cursor:]
@@ -874,7 +908,12 @@ class RouterHandler(BaseHTTPRequestHandler):
 
                 if status == "error":
                     payload = json.dumps(
-                        {"error": {"message": error or "Generation failed"}},
+                        {
+                            "error": {
+                                "message": error or "Generation failed",
+                                "code": error_code or 500,
+                            }
+                        },
                         ensure_ascii=False,
                     )
                     self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
@@ -900,7 +939,12 @@ class RouterHandler(BaseHTTPRequestHandler):
             if res.status >= 400:
                 detail = res.read().decode("utf-8", "replace")
                 payload = json.dumps(
-                    {"error": {"message": detail or f"HTTP {res.status}"}},
+                    {
+                        "error": {
+                            "message": upstream_error_message(detail, res.status),
+                            "code": res.status,
+                        }
+                    },
                     ensure_ascii=False,
                 )
                 self.wfile.write(f"data: {payload}\n\ndata: [DONE]\n\n".encode("utf-8"))
