@@ -258,8 +258,55 @@ def upstream_error_message(raw: str, status: int) -> str:
     return text
 
 
+def _number(value: object) -> float | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _integer(value: object) -> int | None:
+    n = _number(value)
+    return max(0, int(n)) if n is not None else None
+
+
+def estimate_text_tokens(text: str) -> int:
+    # Provider tokenizers differ. This fallback is intentionally marked
+    # "estimated" in the UI; exact/provider counts replace it whenever present.
+    chars = len(text or "")
+    return 0 if chars == 0 else max(1, round(chars / 4))
+
+
+def estimate_message_tokens(messages: object) -> int:
+    if not isinstance(messages, list):
+        return 0
+    total = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        # Small per-message overhead approximates role/template tokens.
+        total += 4
+        content = message.get("content")
+        if isinstance(content, str):
+            total += estimate_text_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    total += estimate_text_tokens(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    # Images are tokenized differently by every vision model.
+                    # Keep a conservative placeholder and flag the whole count
+                    # as estimated rather than counting a huge base64 data URL.
+                    total += 256
+    return total
+
+
 class GenerationJob:
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_id: str, body: dict) -> None:
         self.id = job_id
         self.content = ""
         self.status = "running"  # running | done | stopped | error
@@ -269,6 +316,148 @@ class GenerationJob:
         self.updated_at = time.time()
         self.cond = threading.Condition()
         self.conn: http.client.HTTPConnection | None = None
+
+        requested_model = str(body.get("model") or DEFAULT_MODEL)
+        if requested_model == "local":
+            requested_model = DEFAULT_MODEL
+        meta = MODELS.get(requested_model) or {}
+        self.model_id = requested_model
+        self.provider = str(meta.get("provider") or "local")
+        self.provider_label = str(
+            (PROVIDERS.get(self.provider) or {}).get("label") or self.provider
+        )
+        self.resolved_model = str(meta.get("remote_id") or requested_model)
+        self.started_at = time.time()
+        self.upstream_started_at: float | None = None
+        self.first_token_at: float | None = None
+        self.completed_at: float | None = None
+        self.estimated_input_tokens = estimate_message_tokens(body.get("messages"))
+        self.input_tokens: int | None = None
+        self.output_tokens: int | None = None
+        self.total_tokens: int | None = None
+        self.token_count_source: str | None = None  # provider | local
+        self.finish_reason: str | None = None
+        self.cost_usd: float | None = 0.0 if self.provider == "local" else None
+        self.http_status: int | None = None
+        self.attachments = 0
+
+    def update_usage(self, payload: dict) -> None:
+        with self.cond:
+            resolved = payload.get("model")
+            if resolved:
+                self.resolved_model = str(resolved)
+
+            choices = payload.get("choices")
+            if isinstance(choices, list) and choices:
+                choice = choices[0] if isinstance(choices[0], dict) else {}
+                finish = choice.get("finish_reason")
+                if finish:
+                    self.finish_reason = str(finish)
+
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                prompt = _integer(
+                    usage.get("prompt_tokens")
+                    if usage.get("prompt_tokens") is not None
+                    else usage.get("input_tokens")
+                )
+                completion = _integer(
+                    usage.get("completion_tokens")
+                    if usage.get("completion_tokens") is not None
+                    else usage.get("output_tokens")
+                )
+                total = _integer(usage.get("total_tokens"))
+                if prompt is not None:
+                    self.input_tokens = prompt
+                if completion is not None:
+                    self.output_tokens = completion
+                if total is not None:
+                    self.total_tokens = total
+                if prompt is not None or completion is not None or total is not None:
+                    self.token_count_source = "provider"
+
+                for key in ("cost", "total_cost", "cost_usd"):
+                    value = _number(usage.get(key))
+                    if value is not None:
+                        self.cost_usd = value
+                        break
+
+            # llama.cpp can expose exact prompt/predicted counts as timings.
+            timings = payload.get("timings")
+            if isinstance(timings, dict) and self.token_count_source != "provider":
+                prompt_n = _integer(timings.get("prompt_n"))
+                predicted_n = _integer(timings.get("predicted_n"))
+                if prompt_n is not None:
+                    self.input_tokens = prompt_n
+                if predicted_n is not None:
+                    self.output_tokens = predicted_n
+                if prompt_n is not None or predicted_n is not None:
+                    self.total_tokens = (prompt_n or 0) + (predicted_n or 0)
+                    self.token_count_source = "local"
+
+            # A few gateways report cost at the top level rather than in usage.
+            if self.cost_usd is None:
+                for key in ("cost", "total_cost", "cost_usd"):
+                    value = _number(payload.get(key))
+                    if value is not None:
+                        self.cost_usd = value
+                        break
+
+    def metrics_snapshot(self) -> dict[str, object]:
+        with self.cond:
+            end = self.completed_at or time.time()
+            output = self.output_tokens
+            source = self.token_count_source
+            if output is None:
+                output = estimate_text_tokens(self.content)
+            input_tokens = self.input_tokens
+            if input_tokens is None:
+                input_tokens = self.estimated_input_tokens
+            total = self.total_tokens
+            if total is None:
+                total = input_tokens + output
+            if not source:
+                source = "estimated"
+
+            ttft_ms = (
+                round((self.first_token_at - self.started_at) * 1000)
+                if self.first_token_at is not None else None
+            )
+            duration_ms = max(0, round((end - self.started_at) * 1000))
+            generation_ms = (
+                max(0, round((end - self.first_token_at) * 1000))
+                if self.first_token_at is not None else None
+            )
+            tps = None
+            if generation_ms and generation_ms > 0 and output > 0:
+                tps = round(output / (generation_ms / 1000), 2)
+
+            queue_ms = None
+            if self.upstream_started_at is not None:
+                queue_ms = max(0, round((self.upstream_started_at - self.started_at) * 1000))
+
+            return {
+                "provider": self.provider,
+                "provider_label": self.provider_label,
+                "model_id": self.model_id,
+                "resolved_model": self.resolved_model,
+                "input_tokens": input_tokens,
+                "output_tokens": output,
+                "total_tokens": total,
+                "token_count_source": source,
+                "ttft_ms": ttft_ms,
+                "duration_ms": duration_ms,
+                "generation_ms": generation_ms,
+                "tokens_per_second": tps,
+                "queue_ms": queue_ms,
+                "context_limit": CTX if self.provider == "local" else None,
+                "finish_reason": self.finish_reason,
+                "cost_usd": self.cost_usd,
+                "reconnects": max(0, self.attachments - 1),
+                "http_status": self.http_status,
+                "started_at": round(self.started_at * 1000),
+                "completed_at": round(self.completed_at * 1000) if self.completed_at else None,
+            }
 
     def snapshot(self) -> dict[str, object]:
         with self.cond:
@@ -280,6 +469,7 @@ class GenerationJob:
                 "error": self.error,
                 "error_code": self.error_code,
                 "updated_at": self.updated_at,
+                "metrics": self.metrics_snapshot(),
             }
 
 
@@ -335,6 +525,8 @@ def set_job_terminal(
             job.error = error
             job.error_code = error_code
         job.updated_at = time.time()
+        if job.status != "running" and job.completed_at is None:
+            job.completed_at = job.updated_at
         job.cond.notify_all()
 
 
@@ -342,6 +534,9 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
     # llama-server uses -np 1; serialize background generations accordingly.
     with _generation_lock:
         conn: http.client.HTTPConnection | None = None
+        with job.cond:
+            job.upstream_started_at = time.time()
+            job.updated_at = job.upstream_started_at
         try:
             if job.cancelled:
                 set_job_terminal(job, "stopped")
@@ -364,6 +559,7 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
             conn, res = open_completion(model_id, upstream)
             with job.cond:
                 job.conn = conn
+                job.http_status = res.status
 
             if res.status >= 400:
                 detail = res.read().decode("utf-8", "replace")
@@ -395,6 +591,9 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
                 except Exception:
                     continue
 
+                if isinstance(payload, dict):
+                    job.update_usage(payload)
+
                 if payload.get("error"):
                     err = payload["error"]
                     if isinstance(err, dict):
@@ -406,6 +605,8 @@ def run_generation_job(job: GenerationJob, body: dict) -> None:
                 token = delta.get("content")
                 if token:
                     with job.cond:
+                        if job.first_token_at is None:
+                            job.first_token_at = time.time()
                         job.content += str(token)
                         job.updated_at = time.time()
                         job.cond.notify_all()
@@ -438,7 +639,7 @@ def get_or_start_job(job_id: str, body: dict) -> GenerationJob:
         existing = _jobs.get(job_id)
         if existing:
             return existing
-        job = GenerationJob(job_id)
+        job = GenerationJob(job_id, body)
         _jobs[job_id] = job
 
     threading.Thread(
@@ -923,6 +1124,10 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": {"message": str(e)}})
 
     def _stream_job(self, job: GenerationJob, cursor: int = 0) -> None:
+        with job.cond:
+            job.attachments += 1
+            job.updated_at = time.time()
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache, no-transform")
@@ -951,7 +1156,12 @@ class RouterHandler(BaseHTTPRequestHandler):
                     cursor = len(content)
                     payload = {
                         "choices": [{"delta": {"content": delta}}],
-                        "lueur": {"job_id": job.id, "cursor": cursor, "status": status},
+                        "lueur": {
+                            "job_id": job.id,
+                            "cursor": cursor,
+                            "status": status,
+                            "metrics": job.metrics_snapshot(),
+                        },
                     }
                     raw = json.dumps(payload, ensure_ascii=False)
                     self.wfile.write(f"data: {raw}\n\n".encode("utf-8"))
@@ -975,6 +1185,19 @@ class RouterHandler(BaseHTTPRequestHandler):
                     )
                     self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
 
+                terminal = json.dumps(
+                    {
+                        "choices": [],
+                        "lueur": {
+                            "job_id": job.id,
+                            "cursor": cursor,
+                            "status": status,
+                            "metrics": job.metrics_snapshot(),
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                self.wfile.write(f"data: {terminal}\n\n".encode("utf-8"))
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 break
