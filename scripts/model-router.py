@@ -43,7 +43,14 @@ UI_DIR = Path(os.environ.get("LUEUR_UI_DIR", str(Path.home() / "lueur-ui"))).res
 LLAMA_DIR = Path(os.environ.get("LUEUR_LLAMA_DIR", str(Path.home() / "llama.cpp"))).resolve()
 LLAMA_BIN = LLAMA_DIR / "build" / "bin" / "llama-server"
 MODEL_LOG = Path(os.environ.get("LUEUR_MODEL_LOG", str(Path.home() / "llama-model.log")))
-DEFAULT_MODEL = "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M"
+EXTERNAL_LOCAL = os.environ.get("LUEUR_EXTERNAL_LOCAL", "0") == "1"
+EXTERNAL_LOCAL_ID = os.environ.get(
+    "LUEUR_EXTERNAL_LOCAL_ID", "local::qwen2.5-7b-instruct-q4_0"
+)
+DEFAULT_MODEL = os.environ.get(
+    "LUEUR_DEFAULT_MODEL",
+    EXTERNAL_LOCAL_ID if EXTERNAL_LOCAL else "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M",
+)
 
 PROVIDERS: dict[str, dict[str, object]] = {
     "local": {
@@ -99,8 +106,14 @@ PROVIDERS: dict[str, dict[str, object]] = {
 }
 
 MODELS: dict[str, dict[str, object]] = {
-    # Local GGUF models
-    DEFAULT_MODEL: {
+    # Local Snapdragon NPU model managed by start-ai.sh
+    EXTERNAL_LOCAL_ID: {
+        "label": "Qwen2.5 7B · Snapdragon NPU",
+        "provider": "local",
+        "vision": False,
+    },
+    # Legacy Termux-managed local GGUF models
+    "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M": {
         "label": "Qwen3.5 4B Vision",
         "provider": "local",
         "vision": True,
@@ -244,6 +257,15 @@ MODELS: dict[str, dict[str, object]] = {
         "vision": True,
     },
 }
+
+if EXTERNAL_LOCAL:
+    # The external Snapdragon server has one model loaded. Hide legacy local
+    # choices so the UI cannot request a different GGUF from that same port.
+    MODELS = {
+        mid: meta
+        for mid, meta in MODELS.items()
+        if str(meta.get("provider") or "local") != "local" or mid == EXTERNAL_LOCAL_ID
+    }
 
 MODEL_ALIASES = {
     "nvidia::openai/gpt-oss-120b": "nvidia::openai/gpt-oss-20b",
@@ -823,6 +845,13 @@ def model_health() -> bool:
 
 def stop_model() -> None:
     global _model_proc, _model_log_handle, _active_model
+
+    if EXTERNAL_LOCAL:
+        # start-ai.sh owns the Snapdragon/NPU llama-server process.
+        _model_proc = None
+        _active_model = None
+        return
+
     proc = _model_proc
     _model_proc = None
     _active_model = None
@@ -858,9 +887,20 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
 
     meta = MODELS[model_id]
     if str(meta.get("provider") or "local") != "local":
-        # Selecting a cloud model releases local llama.cpp RAM.
+        # Selecting a cloud model releases router-managed local RAM.
+        # In external Snapdragon mode start-ai.sh owns the NPU server.
         with _model_lock:
             stop_model()
+        return
+
+    if EXTERNAL_LOCAL:
+        if model_id != EXTERNAL_LOCAL_ID:
+            raise RuntimeError(f"Modèle local externe non disponible: {model_id}")
+        if not model_health():
+            raise RuntimeError(
+                f"Qwen2.5 7B NPU indisponible sur http://{MODEL_HOST}:{MODEL_PORT}"
+            )
+        _active_model = model_id
         return
 
     with _model_lock:
@@ -924,6 +964,9 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
 
 
 def active_model() -> str | None:
+    if EXTERNAL_LOCAL:
+        return EXTERNAL_LOCAL_ID if model_health() else None
+
     with _model_lock:
         if _model_proc and _model_proc.poll() is None:
             return _active_model
