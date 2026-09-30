@@ -39,6 +39,7 @@ const PROVIDER_LABELS = {
   nvidia: 'NVIDIA NIM',
   cohere: 'Cohere',
   vercel: 'Vercel AI Gateway',
+  modal: 'Modal GPU · llama.cpp',
 } as const;
 
 export const DEFAULT_MODELS: ModelEntry[] = [
@@ -50,7 +51,10 @@ export const DEFAULT_MODELS: ModelEntry[] = [
   { id: QWEN35_9B_MODEL_ID, label: 'Qwen3.5 9B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
   { id: DEEPSEEK_R1_7B_MODEL_ID, label: 'DeepSeek R1 Qwen 7B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
 
-  // Cloud providers proxied securely by the Termux router.
+  // Modal GPU — routed securely by the Cloudflare Worker; Termux stays available independently.
+  { id: 'modal::qwen2.5-7b-instruct-q4_k_m', label: 'Qwen2.5 7B · Modal T4', provider: 'modal', providerLabel: PROVIDER_LABELS.modal },
+
+  // Cloud providers proxied securely by the Lueur gateway.
   { id: 'groq::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
   { id: 'groq::qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
   { id: 'gemini::gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'gemini', providerLabel: PROVIDER_LABELS.gemini },
