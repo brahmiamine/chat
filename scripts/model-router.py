@@ -499,6 +499,8 @@ def cancel_job(job_id: str) -> bool:
         if job.status == "running":
             job.status = "stopped"
         job.updated_at = time.time()
+        if job.completed_at is None:
+            job.completed_at = job.updated_at
         conn = job.conn
         job.cond.notify_all()
     if conn:
