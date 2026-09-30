@@ -45,19 +45,13 @@ SNAP_LLAMA_DIR = Path(
     os.environ.get("LUEUR_SNAP_LLAMA_DIR", str(Path.home() / "llama-snapdragon"))
 ).resolve()
 SNAP_LLAMA_BIN = SNAP_LLAMA_DIR / "bin" / "llama-server"
-QWEN25_MODEL_PATH = Path(
-    os.environ.get(
-        "LUEUR_QWEN25_MODEL_PATH",
-        str(Path.home() / "models" / "Qwen2.5-7B-Instruct-Q4_0.gguf"),
-    )
-).resolve()
-QWEN3_MODEL_PATH = Path(
-    os.environ.get(
-        "LUEUR_QWEN3_MODEL_PATH",
-        str(Path.home() / "models" / "Qwen3-8B-Q4_0.gguf"),
-    )
+MODEL_DIR = Path(
+    os.environ.get("LUEUR_MODEL_DIR", str(Path.home() / "models"))
 ).resolve()
 MODEL_LOG = Path(os.environ.get("LUEUR_MODEL_LOG", str(Path.home() / "llama-model.log")))
+DOWNLOAD_LOG = Path(
+    os.environ.get("LUEUR_DOWNLOAD_LOG", str(Path.home() / "lueur-model-download.log"))
+)
 DEFAULT_MODEL = os.environ.get("LUEUR_DEFAULT_MODEL", "local::qwen2.5-7b-instruct-q4_0")
 
 PROVIDERS: dict[str, dict[str, object]] = {
@@ -114,19 +108,56 @@ PROVIDERS: dict[str, dict[str, object]] = {
 }
 
 MODELS: dict[str, dict[str, object]] = {
-    # Local Snapdragon Hexagon NPU models. Only one is loaded at a time.
+    # Snapdragon Hexagon HTP0 models. Exactly one local GGUF is loaded at a time.
+    "local::phi4-mini-3.8b-q4_0": {
+        "label": "Phi-4 Mini 3.8B · Snapdragon NPU",
+        "provider": "local",
+        "vision": False,
+        "filename": "microsoft_Phi-4-mini-instruct-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_0.gguf",
+        "ubatch": 1024,
+    },
     "local::qwen2.5-7b-instruct-q4_0": {
         "label": "Qwen2.5 7B · Snapdragon NPU",
         "provider": "local",
         "vision": False,
-        "path": str(QWEN25_MODEL_PATH),
+        "filename": "Qwen2.5-7B-Instruct-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_0.gguf",
+        "ubatch": 1024,
     },
     "local::qwen3-8b-q4_0": {
         "label": "Qwen3 8B · Snapdragon NPU",
         "provider": "local",
         "vision": False,
         "thinking": True,
-        "path": str(QWEN3_MODEL_PATH),
+        "filename": "Qwen3-8B-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_0.gguf",
+        "ubatch": 1024,
+    },
+    "local::qwen2.5-coder-7b-q4_0": {
+        "label": "Qwen2.5 Coder 7B · Snapdragon NPU",
+        "provider": "local",
+        "vision": False,
+        "filename": "Qwen2.5-Coder-7B-Instruct-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_0.gguf",
+        "ubatch": 1024,
+    },
+    "local::gemma3-12b-q4_0": {
+        "label": "Gemma 3 12B · Snapdragon NPU",
+        "provider": "local",
+        "vision": False,
+        "filename": "google_gemma-3-12b-it-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_0.gguf",
+        "ubatch": 512,
+    },
+    "local::deepseek-r1-qwen-14b-q4_0": {
+        "label": "DeepSeek R1 Qwen 14B · Snapdragon NPU",
+        "provider": "local",
+        "vision": False,
+        "thinking": True,
+        "filename": "DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf",
+        "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf",
+        "ubatch": 512,
     },
 
     # Cloud models. Prefixing the id avoids collisions between providers.
@@ -839,6 +870,81 @@ def stop_model() -> None:
         _model_log_handle = None
 
 
+def ensure_model_file(
+    meta: dict[str, object],
+    keepalive: Callable[[], None] | None = None,
+) -> Path:
+    filename = str(meta.get("filename") or "").strip()
+    url = str(meta.get("url") or "").strip()
+    if not filename or not url:
+        raise RuntimeError("Configuration de téléchargement du modèle incomplète")
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    model_path = (MODEL_DIR / filename).resolve()
+    if model_path.exists() and model_path.is_file():
+        return model_path
+
+    part_path = Path(str(model_path) + ".part")
+    DOWNLOAD_LOG.parent.mkdir(parents=True, exist_ok=True)
+    label = str(meta.get("label") or filename)
+    log(f"Téléchargement à la demande: {label}")
+
+    for attempt in range(1, 21):
+        resumed = part_path.stat().st_size if part_path.exists() else 0
+        log(
+            f"Téléchargement {label}: tentative {attempt}/20"
+            + (f", reprise à {resumed / (1024 ** 3):.2f} GiB" if resumed else "")
+        )
+
+        args = [
+            "curl",
+            "-L",
+            "--fail",
+            "--connect-timeout", "30",
+            "--retry", "5",
+            "--retry-delay", "5",
+            "--retry-all-errors",
+            "-C", "-",
+            "-o", str(part_path),
+            url,
+        ]
+
+        with DOWNLOAD_LOG.open("a", encoding="utf-8") as download_log:
+            download_log.write(
+                f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {label} tentative {attempt}/20\n"
+            )
+            download_log.flush()
+            proc = subprocess.Popen(
+                args,
+                stdout=download_log,
+                stderr=subprocess.STDOUT,
+            )
+
+            last_keepalive = 0.0
+            while proc.poll() is None:
+                now = time.monotonic()
+                if keepalive and now - last_keepalive >= 2:
+                    keepalive()
+                    last_keepalive = now
+                time.sleep(1)
+
+        if proc.returncode == 0:
+            part_path.replace(model_path)
+            log(f"Téléchargement terminé: {model_path.name}")
+            return model_path
+
+        log(f"Téléchargement interrompu pour {label}; reprise dans 5 s")
+        for _ in range(5):
+            if keepalive:
+                keepalive()
+            time.sleep(1)
+
+    raise RuntimeError(
+        f"Téléchargement de {label} interrompu après 20 tentatives. "
+        f"Le fichier partiel est conservé: {part_path}"
+    )
+
+
 def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> None:
     global _model_proc, _model_log_handle, _active_model
 
@@ -854,8 +960,6 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
             stop_model()
         return
 
-    model_path = Path(str(meta.get("path") or "")).resolve()
-
     with _model_lock:
         if (
             _active_model == model_id
@@ -869,8 +973,9 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
 
         if not SNAP_LLAMA_BIN.exists():
             raise RuntimeError(f"llama-server Snapdragon introuvable: {SNAP_LLAMA_BIN}")
-        if not model_path.exists():
-            raise RuntimeError(f"Modèle local introuvable: {model_path}")
+
+        model_path = ensure_model_file(meta, keepalive)
+        ubatch = int(meta.get("ubatch") or 1024)
 
         args = [
             str(SNAP_LLAMA_BIN),
@@ -878,7 +983,7 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
             "-ngl", "99",
             "--device", "HTP0",
             "-fa", "on",
-            "--ubatch-size", "1024",
+            "--ubatch-size", str(ubatch),
             "--host", MODEL_HOST,
             "--port", str(MODEL_PORT),
             "-c", str(CTX),
@@ -1359,9 +1464,11 @@ def cleanup() -> None:
 
 
 def main() -> int:
-    if not LLAMA_BIN.exists():
-        print(f"❌ llama-server introuvable: {LLAMA_BIN}", file=sys.stderr)
+    if not SNAP_LLAMA_BIN.exists():
+        print(f"❌ llama-server Snapdragon introuvable: {SNAP_LLAMA_BIN}", file=sys.stderr)
         return 1
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     atexit.register(cleanup)
 
@@ -1380,7 +1487,7 @@ def main() -> int:
     log(f"llama-server interne: http://{MODEL_HOST}:{MODEL_PORT}")
     configured = sum(1 for p in provider_statuses().values() if p["configured"])
     log(f"Modèles: {len(MODELS)} · fournisseurs configurés: {configured}/{len(PROVIDERS)}")
-    log("Le local garde un seul modèle GGUF en RAM; les modèles cloud passent par le router.")
+    log("Le local garde un seul modèle GGUF NPU en RAM; les modèles manquants sont téléchargés à la demande.")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
