@@ -3,7 +3,8 @@
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
 # Le router Python garde un seul modèle GGUF local en RAM à la fois et peut
-# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, Cerebras et HF.
+# aussi relayer Groq, Gemini, Mistral, OpenRouter, Workers AI, Cerebras, HF,
+# NVIDIA NIM, Cohere et Vercel AI Gateway.
 #
 # Usage :
 #   ~/start-ai.sh
@@ -35,6 +36,9 @@ ENV_FILE="$HOME/.lueur.env"
 #   export OPENROUTER_API_KEY='...'
 #   export CEREBRAS_API_KEY='...'
 #   export HF_TOKEN='...'
+#   export NVIDIA_API_KEY='...'
+#   export COHERE_API_KEY='...'
+#   export AI_GATEWAY_API_KEY='...'
 #   export CLOUDFLARE_ACCOUNT_ID='...'
 #   export CLOUDFLARE_AI_API_TOKEN='...'
 #
@@ -203,6 +207,9 @@ else
     OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
     CEREBRAS_API_KEY="${CEREBRAS_API_KEY:-}" \
     HF_TOKEN="${HF_TOKEN:-}" \
+    NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
+    COHERE_API_KEY="${COHERE_API_KEY:-}" \
+    AI_GATEWAY_API_KEY="${AI_GATEWAY_API_KEY:-}" \
     CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-}" \
     CLOUDFLARE_AI_API_TOKEN="${CLOUDFLARE_AI_API_TOKEN:-}" \
     python "$ROUTER_SCRIPT" \
@@ -309,6 +316,9 @@ echo "   🌐 OpenRouter  : Free Router"
 echo "   ☁️ Workers AI  : GPT-OSS 120B"
 echo "   🚀 Cerebras    : GPT-OSS 120B"
 echo "   🤗 HuggingFace : DeepSeek R1"
+echo "   🟢 NVIDIA NIM  : GPT-OSS 120B, DeepSeek V4 Flash, Qwen3 Next 80B"
+echo "   🟣 Cohere      : Command A+"
+echo "   ▲ Vercel      : Ling 3.0 Flash VL Free"
 echo
 echo "💾 Un seul modèle local est chargé en RAM à la fois."
 echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
@@ -321,10 +331,13 @@ PROVIDER_COUNT=0
 [ -n "${OPENROUTER_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${CEREBRAS_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 [ -n "${HF_TOKEN:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${NVIDIA_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${COHERE_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+[ -n "${AI_GATEWAY_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] && [ -n "${CLOUDFLARE_AI_API_TOKEN:-}" ]; then
   PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 fi
-echo "🔐 Fournisseurs cloud configurés : $PROVIDER_COUNT/7"
+echo "🔐 Fournisseurs cloud configurés : $PROVIDER_COUNT/10"
 echo "   Configuration : $ENV_FILE"
 echo
 

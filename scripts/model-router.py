@@ -86,6 +86,21 @@ PROVIDERS: dict[str, dict[str, object]] = {
         "base_url": "https://router.huggingface.co/v1",
         "required_env": ["HF_TOKEN"],
     },
+    "nvidia": {
+        "label": "NVIDIA NIM",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "required_env": ["NVIDIA_API_KEY"],
+    },
+    "cohere": {
+        "label": "Cohere",
+        "base_url": "https://api.cohere.ai/compatibility/v1",
+        "required_env": ["COHERE_API_KEY"],
+    },
+    "vercel": {
+        "label": "Vercel AI Gateway",
+        "base_url": "https://ai-gateway.vercel.sh/v1",
+        "required_env": ["AI_GATEWAY_API_KEY"],
+    },
 }
 
 MODELS: dict[str, dict[str, object]] = {
@@ -176,6 +191,36 @@ MODELS: dict[str, dict[str, object]] = {
         "provider": "huggingface",
         "remote_id": "deepseek-ai/DeepSeek-R1:fastest",
         "vision": False,
+    },
+    "nvidia::openai/gpt-oss-120b": {
+        "label": "GPT-OSS 120B",
+        "provider": "nvidia",
+        "remote_id": "openai/gpt-oss-120b",
+        "vision": False,
+    },
+    "nvidia::deepseek-ai/deepseek-v4-flash": {
+        "label": "DeepSeek V4 Flash",
+        "provider": "nvidia",
+        "remote_id": "deepseek-ai/deepseek-v4-flash",
+        "vision": False,
+    },
+    "nvidia::qwen/qwen3-next-80b-a3b-instruct": {
+        "label": "Qwen3 Next 80B A3B",
+        "provider": "nvidia",
+        "remote_id": "qwen/qwen3-next-80b-a3b-instruct",
+        "vision": False,
+    },
+    "cohere::command-a-plus-05-2026": {
+        "label": "Command A+",
+        "provider": "cohere",
+        "remote_id": "command-a-plus-05-2026",
+        "vision": False,
+    },
+    "vercel::inclusionai/ling-3.0-flash-vl": {
+        "label": "Ling 3.0 Flash VL Free",
+        "provider": "vercel",
+        "remote_id": "inclusionai/ling-3.0-flash-vl",
+        "vision": True,
     },
 }
 
@@ -461,6 +506,9 @@ def provider_headers(provider: str) -> dict[str, str]:
         "cloudflare": "CLOUDFLARE_AI_API_TOKEN",
         "cerebras": "CEREBRAS_API_KEY",
         "huggingface": "HF_TOKEN",
+        "nvidia": "NVIDIA_API_KEY",
+        "cohere": "COHERE_API_KEY",
+        "vercel": "AI_GATEWAY_API_KEY",
     }[provider]
     headers = {
         "Authorization": f"Bearer {os.environ.get(key_env, '')}",
@@ -502,6 +550,15 @@ def open_completion(
         # Cloud inference does not need a GGUF model occupying phone RAM.
         stop_model()
         upstream["model"] = str(meta.get("remote_id") or model_id)
+        if provider == "cohere" and isinstance(upstream.get("messages"), list):
+            upstream["messages"] = [
+                {
+                    **message,
+                    "role": "developer" if message.get("role") == "system" else message.get("role"),
+                }
+                if isinstance(message, dict) else message
+                for message in upstream["messages"]
+            ]
         base = provider_base_url(provider)
         headers = provider_headers(provider)
         parsed = urllib.parse.urlsplit(base)

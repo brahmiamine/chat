@@ -6,6 +6,7 @@ import type { SettingsModalProps } from './SettingsModal';
 
 const KNOWN_PROVIDERS = new Set<ModelProviderId>([
   'local', 'groq', 'gemini', 'mistral', 'openrouter', 'cloudflare', 'cerebras', 'huggingface',
+  'nvidia', 'cohere', 'vercel',
 ]);
 
 function inferredProvider(id: string): ModelProviderId {
