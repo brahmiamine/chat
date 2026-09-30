@@ -48,7 +48,20 @@ function MetricsLine({ metrics }: { metrics?: GenerationMetrics }) {
     items.push(`ctx ${metrics.inputTokens.toLocaleString('fr-FR')}/${metrics.contextLimit.toLocaleString('fr-FR')}`);
   }
   if (metrics.reconnects) items.push(`${metrics.reconnects} reconnexion${metrics.reconnects > 1 ? 's' : ''}`);
-  if (typeof metrics.costUsd === 'number') items.push(metrics.costUsd === 0 ? '0 
+  if (typeof metrics.costUsd === 'number') {
+    items.push(metrics.costUsd === 0 ? '0 $' : `${metrics.costUsd.toFixed(4)} $`);
+  }
+
+  const detail = [
+    metrics.resolvedModel && `Modèle: ${metrics.resolvedModel}`,
+    metrics.finishReason && `Arrêt: ${metrics.finishReason}`,
+    metrics.queueMs != null && `File: ${compactMs(metrics.queueMs)}`,
+    estimated && 'Tokens estimés (le fournisseur n’a pas renvoyé de comptage exact)',
+  ].filter(Boolean).join(' · ');
+
+  return <div className="msg-metrics" title={detail || undefined}>{items.map((x, i) => <span key={i}>{x}</span>)}</div>;
+}
+
 export const UserMessage = memo(function UserMessage({ message }: { message: UserMsg }) {
   const { copied, copy } = useCopy();
   return (
