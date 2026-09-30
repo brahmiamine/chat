@@ -191,6 +191,65 @@ Chaque réponse en cours possède un `generationId` sauvegardé dans IndexedDB. 
 
 Les jobs terminés sont conservés en mémoire par le router pendant une heure pour permettre une reconnexion. Un redémarrage de Termux/router efface les jobs en mémoire.
 
+### Fournisseurs cloud
+
+Le même router peut maintenant utiliser des modèles locaux **ou** des fournisseurs cloud. Les clés restent uniquement dans Termux et ne sont jamais envoyées au navigateur.
+
+Ajoutez uniquement les fournisseurs que vous souhaitez utiliser dans `~/.lueur.env` :
+
+```bash
+# GroqCloud
+export GROQ_API_KEY='...'
+
+# Google Gemini
+export GEMINI_API_KEY='...'
+
+# Mistral AI
+export MISTRAL_API_KEY='...'
+
+# OpenRouter
+export OPENROUTER_API_KEY='...'
+
+# Cerebras
+export CEREBRAS_API_KEY='...'
+
+# Hugging Face Inference Providers
+export HF_TOKEN='...'
+
+# Cloudflare Workers AI
+export CLOUDFLARE_ACCOUNT_ID='...'
+export CLOUDFLARE_AI_API_TOKEN='...'
+```
+
+Puis protégez le fichier et redémarrez :
+
+```bash
+chmod 600 ~/.lueur.env
+~/start-ai.sh restart
+```
+
+Les modèles intégrés dans l'interface sont actuellement :
+
+| Fournisseur | Modèle Lueur | Modèle envoyé au fournisseur |
+| --- | --- | --- |
+| Local | Qwen3.5 4B Vision, Gemma 3 4B Vision, Phi-4 Mini, Llama 3.2, SmolLM3, DeepSeek R1 1.5B, Qwen2.5 Coder | GGUF via llama.cpp |
+| GroqCloud | GPT-OSS 120B | `openai/gpt-oss-120b` |
+| GroqCloud | Qwen 3.8 27B | `qwen/qwen3.8-27b` |
+| Google Gemini | Gemini 3.8 Flash | `gemini-3.8-flash` |
+| Mistral AI | Mistral Small | `mistral-small-latest` |
+| OpenRouter | OpenRouter Free | `openrouter/free` |
+| Cloudflare Workers AI | GPT-OSS 120B | `@cf/openai/gpt-oss-120b` |
+| Cerebras | GPT-OSS 120B | `gpt-oss-120b` |
+| Hugging Face | DeepSeek R1 | `deepseek-ai/DeepSeek-R1:fastest` |
+
+Le navigateur continue à appeler uniquement le router Lueur. Celui-ci choisit automatiquement le bon fournisseur à partir du modèle sélectionné, conserve le streaming SSE et garde la génération en arrière-plan lorsque le navigateur est fermé.
+
+Pour vérifier les fournisseurs configurés :
+
+```bash
+curl http://127.0.0.1:8080/providers
+```
+
 Pour tout arrêter :
 
 ```bash
@@ -207,10 +266,11 @@ Lueur utilise donc `scripts/model-router.py`, un petit router HTTP Python compat
 ngrok / Lueur :8080
         ↓
 router Python
-        ↓
-llama-server :8081
-        ↓
-1 seul modèle chargé à la fois
+   ┌────┴───────────────────────────────────────────────┐
+   ↓                                                    ↓
+llama-server :8081                            APIs cloud sécurisées
+   ↓                                  Groq / Gemini / Mistral / OpenRouter
+1 GGUF local à la fois                 Workers AI / Cerebras / Hugging Face
 ```
 
 Compilez `llama.cpp` en mode Android normal, sans subprocess :
@@ -232,7 +292,7 @@ chmod +x ~/start-ai.sh
 ~/start-ai.sh restart
 ```
 
-Le router démarre automatiquement le modèle demandé par le champ OpenAI `model`, arrête le précédent, attend son chargement et relaie le streaming. Des commentaires SSE gardent la connexion ouverte pendant un premier téléchargement long.
+Le router lit le champ OpenAI `model`. Pour un modèle local, il charge automatiquement le GGUF demandé et libère le précédent. Pour un modèle cloud, il libère la RAM du modèle local, remplace l'identifiant Lueur par l'identifiant du fournisseur et relaie la requête HTTPS/SSE avec la clé conservée dans Termux.
 
 ## Modèles texte de test
 
