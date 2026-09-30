@@ -96,10 +96,18 @@ export interface ProviderConfig {
 
 export type HealthStatus = 'checking' | 'online' | 'offline' | 'loading' | 'demo';
 
+export interface ProviderStatus {
+  id: string;
+  label: string;
+  configured: boolean;
+  missing: string[];
+}
+
 export interface ServerInfo {
   models: string[];
   modelPath?: string;
   nCtx?: number;
+  providers?: Record<string, ProviderStatus>;
 }
 
 // ---------- Settings ----------
@@ -108,9 +116,23 @@ export type ProviderKind = 'openai-compatible' | 'demo';
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type FontSize = 15 | 16 | 17;
 
+export type ModelProviderId =
+  | 'local'
+  | 'groq'
+  | 'gemini'
+  | 'mistral'
+  | 'openrouter'
+  | 'cloudflare'
+  | 'cerebras'
+  | 'huggingface'
+  | 'custom';
+
 export interface ModelEntry {
   id: string;
   label: string;
+  /** Provider handled by the Lueur Termux router. */
+  provider?: ModelProviderId;
+  providerLabel?: string;
 }
 
 export interface GenerationSettings {
