@@ -2,13 +2,17 @@ import type { GenerationSettings, ModelEntry, Settings } from '../types';
 
 const env = import.meta.env;
 
-const DEFAULT_MODEL_ID = env.VITE_LLM_MODEL || 'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M';
-const GEMMA_MODEL_ID = 'ggml-org/gemma-3-4b-it-GGUF:Q4_K_M';
-const PHI_MODEL_ID = 'bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M';
-const LLAMA_MODEL_ID = 'bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M';
-const SMOL_MODEL_ID = 'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M';
-const DEEPSEEK_MODEL_ID = 'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M';
-const CODER_MODEL_ID = 'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M';
+const DEFAULT_MODEL_ID = 'local::qwen2.5-7b-instruct-q4_0';
+
+const OLD_LOCAL_MODEL_IDS = new Set([
+  'lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M',
+  'ggml-org/gemma-3-4b-it-GGUF:Q4_K_M',
+  'bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M',
+  'bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M',
+  'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:Q4_K_M',
+  'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF:Q4_K_M',
+  'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M',
+]);
 
 const PROVIDER_LABELS = {
   local: 'Local · llama.cpp',
@@ -24,14 +28,8 @@ const PROVIDER_LABELS = {
 } as const;
 
 export const DEFAULT_MODELS: ModelEntry[] = [
-  // Local GGUF
-  { id: DEFAULT_MODEL_ID, label: 'Qwen3.5 4B Vision', provider: 'local', providerLabel: PROVIDER_LABELS.local },
-  { id: GEMMA_MODEL_ID, label: 'Gemma 3 4B Vision', provider: 'local', providerLabel: PROVIDER_LABELS.local },
-  { id: PHI_MODEL_ID, label: 'Phi-4 Mini 3.8B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
-  { id: LLAMA_MODEL_ID, label: 'Llama 3.2 3B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
-  { id: SMOL_MODEL_ID, label: 'SmolLM3 3B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
-  { id: DEEPSEEK_MODEL_ID, label: 'DeepSeek R1 1.5B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
-  { id: CODER_MODEL_ID, label: 'Qwen2.5 Coder 3B', provider: 'local', providerLabel: PROVIDER_LABELS.local },
+  // Unique modèle local : Snapdragon Hexagon NPU
+  { id: DEFAULT_MODEL_ID, label: 'Qwen2.5 7B · Snapdragon NPU', provider: 'local', providerLabel: PROVIDER_LABELS.local },
 
   // Cloud providers proxied securely by the Termux router.
   { id: 'groq::openai/gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'groq', providerLabel: PROVIDER_LABELS.groq },
@@ -95,22 +93,29 @@ const MODEL_REPLACEMENTS: Record<string, string> = {
 
 const REMOVED_MODELS = new Set([
   'cerebras::gpt-oss-120b',
+  ...OLD_LOCAL_MODEL_IDS,
 ]);
 
 const LEGACY_DEFAULT_MODELS = new Set([
   'mradermacher/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M',
   'Qwen2.5-7B-Instruct-GGUF:Q4_K_M',
+  ...OLD_LOCAL_MODEL_IDS,
   ...Object.keys(MODEL_REPLACEMENTS),
 ]);
 
 function migrateDefaultModel(s: Settings): Settings {
-  const selectedWasRemoved = REMOVED_MODELS.has(s.modelId) || s.modelId.startsWith('cerebras::');
+  const selectedWasRemoved =
+    REMOVED_MODELS.has(s.modelId)
+    || OLD_LOCAL_MODEL_IDS.has(s.modelId)
+    || s.modelId.startsWith('cerebras::');
   const modelId = selectedWasRemoved
     ? DEFAULT_MODEL_ID
     : MODEL_REPLACEMENTS[s.modelId]
       || (LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId);
   const models: ModelEntry[] = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
+    .filter(m => !OLD_LOCAL_MODEL_IDS.has(m.id))
+    .filter(m => String(m.provider || '') !== 'local' || m.id === DEFAULT_MODEL_ID)
     .filter(m => !REMOVED_MODELS.has(m.id) && !m.id.startsWith('cerebras::') && String(m.provider || '') !== 'cerebras')
     .map((m): ModelEntry => {
       const builtin = DEFAULT_MODELS.find(x => x.id === m.id);
@@ -121,7 +126,7 @@ function migrateDefaultModel(s: Settings): Settings {
         : { ...m, provider: m.provider || 'custom' };
     });
 
-  // Keep all built-in local + cloud router models available in the selector,
+  // Keep the single built-in local NPU model + cloud router models available,
   // including for users who already have settings saved locally.
   for (const builtin of [...DEFAULT_MODELS].reverse()) {
     if (!models.some(m => m.id === builtin.id)) models.unshift(builtin);
@@ -158,7 +163,7 @@ export function saveSettings(s: Settings) {
   try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* quota / private mode */ }
 }
 
-/** "lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M" → "Qwen3.5 4B". */
+/** "local::qwen2.5-7b-instruct-q4_0" → a readable model name. */
 export function prettyModel(id: string): string {
   const raw = String(id || '').replace(/^[a-z]+::/i, '');
   const s = raw.split('/').pop()!.replace(/\.gguf$/i, '').replace(/[:@].*$/, '').replace(/-GGUF.*$/i, '');
