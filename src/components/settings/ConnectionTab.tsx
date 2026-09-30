@@ -9,29 +9,39 @@ import type { SettingsModalProps } from './SettingsModal';
 export function ConnectionTab({ settings: s, update, health, server, test, onTest }: SettingsModalProps) {
   const [showKey, setShowKey] = useState(false);
   const isDemo = s.provider === 'demo';
+  const selected = currentModel(s);
 
   let host = s.baseUrl;
   try { host = new URL(s.baseUrl).host; } catch { /* keep raw */ }
-  const srvModel = server.models[0] || (server.modelPath ? String(server.modelPath).split(/[\\/]/).pop() : '') || currentModel(s).id;
-  const isLlamaCpp = !!(server.modelPath || server.nCtx);
+
+  const selectedProvider = selected.provider || 'custom';
+  const providerState = server.providers?.[selectedProvider];
+  const providerName = selected.providerLabel || providerState?.label || selectedProvider;
+
   const rows = [
     { k: 'Statut', v: statusLabel(health) },
-    { k: 'Modèle', v: srvModel },
-    { k: 'API', v: isLlamaCpp ? 'llama.cpp · compatible OpenAI' : 'Compatible OpenAI' },
+    { k: 'Modèle sélectionné', v: selected.label },
+    { k: 'Fournisseur', v: providerName },
+    { k: 'API', v: 'Lueur Router · compatible OpenAI' },
     { k: 'Point d’accès', v: host },
   ];
-  if (server.nCtx) rows.push({ k: 'Contexte serveur', v: Number(server.nCtx).toLocaleString('fr-FR') + ' tokens' });
+  if (server.nCtx && selectedProvider === 'local') {
+    rows.push({ k: 'Contexte local', v: Number(server.nCtx).toLocaleString('fr-FR') + ' tokens' });
+  }
+
+  const providers = Object.values(server.providers || {});
 
   return (
     <div className="stack">
       <div>
         <div className="s-label seg-gap">Source</div>
         <Segmented<ProviderKind>
-          options={[{ value: 'openai-compatible', label: 'llama-server' }, { value: 'demo', label: 'Démo hors ligne' }]}
+          options={[{ value: 'openai-compatible', label: 'Router Lueur' }, { value: 'demo', label: 'Démo hors ligne' }]}
           value={s.provider}
           onChange={v => update({ provider: v })}
         />
       </div>
+
       {isDemo ? (
         <div className="s-help" style={{ fontSize: 13.5, lineHeight: 1.55, marginTop: -12 }}>
           Les réponses sont simulées localement, sans serveur. Pratique pour tester l’interface.
@@ -39,19 +49,23 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
       ) : (
         <div className="stack md">
           <div>
-            <div className="s-label">URL du serveur</div>
+            <div className="s-label">URL du router</div>
             <input
               className="field mono"
               value={s.baseUrl}
               onChange={e => update({ baseUrl: e.target.value })}
-              placeholder="https://below-cancer-loads-dat.trycloudflare.com"
+              placeholder="https://votre-url.ngrok.app"
               inputMode="url"
               spellCheck={false}
               autoComplete="off"
             />
+            <div className="s-help">
+              En accès ngrok, utilisez l’URL publique. Quand Lueur est servie directement par le router, l’application utilise automatiquement la même origine.
+            </div>
           </div>
+
           <div>
-            <div className="s-label">Clé API</div>
+            <div className="s-label">Clé API du router</div>
             <div className="key-wrap">
               <input
                 className="field mono"
@@ -66,7 +80,11 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
                 {showKey ? <EyeOffIcon /> : <EyeIcon />}
               </button>
             </div>
+            <div className="s-help">
+              Les clés Groq, Gemini, Mistral, OpenRouter, Cloudflare, Cerebras et Hugging Face restent côté Termux dans <code>~/.lueur.env</code>.
+            </div>
           </div>
+
           <div>
             <button className="btn-solid" onClick={onTest} disabled={test.state === 'testing'}>
               {test.state === 'testing' ? <span className="spinner sm" /> : <PlugIcon />}
@@ -83,6 +101,7 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
               </div>
             )}
           </div>
+
           <div>
             <div className="s-label seg-gap">Serveur</div>
             <div className="server-card">
@@ -91,6 +110,25 @@ export function ConnectionTab({ settings: s, update, health, server, test, onTes
               ))}
             </div>
           </div>
+
+          {providers.length > 0 && (
+            <div>
+              <div className="s-label seg-gap">Fournisseurs IA</div>
+              <div className="s-help" style={{ marginBottom: 8 }}>
+                Les modèles restent visibles même sans clé. « Configuré » signifie que le router a trouvé les variables nécessaires au démarrage.
+              </div>
+              <div className="server-card">
+                {providers.map(p => (
+                  <div key={p.id} className="server-row">
+                    <span className="k">{p.label}</span>
+                    <span className="v">
+                      {p.configured ? '✓ Configuré' : `À configurer · ${p.missing.join(', ')}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
