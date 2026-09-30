@@ -70,6 +70,11 @@ const MODELS = {
     provider: 'local',
     vision: false,
   },
+  'local::qwen3-8b-q4_0': {
+    label: 'Qwen3 8B · Snapdragon NPU',
+    provider: 'local',
+    vision: false,
+  },
 
   'groq::openai/gpt-oss-120b': {
     label: 'GPT-OSS 120B',
