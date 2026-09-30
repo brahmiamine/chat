@@ -243,15 +243,15 @@ download_model \
   || DOWNLOAD_FAILED=1
 
 download_model \
-  "Gemma 3 12B Q4_0" \
-  "google_gemma-3-12b-it-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_0.gguf" \
+  "Qwen3.5 9B Q4_0" \
+  "Qwen_Qwen3.5-9B-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/main/Qwen_Qwen3.5-9B-Q4_0.gguf" \
   || DOWNLOAD_FAILED=1
 
 download_model \
-  "DeepSeek R1 Qwen 14B Q4_0" \
-  "DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_0.gguf" \
+  "DeepSeek R1 Qwen 7B Q4_0" \
+  "DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf" \
+  "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf" \
   || DOWNLOAD_FAILED=1
 
 echo
@@ -440,8 +440,8 @@ echo "   🏠 Local NPU   : Phi-4 Mini 3.8B Q4_0"
 echo "                  Qwen2.5 7B Q4_0"
 echo "                  Qwen3 8B Q4_0"
 echo "                  Qwen2.5 Coder 7B Q4_0"
-echo "                  Gemma 3 12B Q4_0"
-echo "                  DeepSeek R1 Qwen 14B Q4_0"
+echo "                  Qwen3.5 9B Q4_0"
+echo "                  DeepSeek R1 Qwen 7B Q4_0"
 echo "                  Backend : Hexagon HTP0"
 echo "   ⚡ Groq        : GPT-OSS 120B, Qwen 3.8 27B"
 echo "   ✨ Gemini      : Gemini 3.8 Flash"
