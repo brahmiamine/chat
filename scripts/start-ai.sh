@@ -2,14 +2,18 @@
 # Lueur + router Python Android + Snapdragon NPU local models + ngrok via Debian proot
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
-# Six modèles Q4_0 peuvent tourner localement sur Snapdragon Hexagon HTP0.
-# Un seul modèle local est chargé à la fois, sans clé API locale.
-# Tous les modèles manquants sont téléchargés automatiquement au démarrage.
+# Les modèles Q4_0 locaux tournent sur Snapdragon Hexagon HTP0.
+# Un seul modèle local est chargé à la fois, et il est déchargé après
+# LUEUR_IDLE_UNLOAD secondes d'inactivité.
+# Les modèles manquants sont téléchargés en arrière-plan : le démarrage n'attend pas.
+# Un superviseur relance automatiquement le router et le tunnel s'ils tombent.
 #
 # Usage :
-#   ~/start-ai.sh
-#   ~/start-ai.sh restart
-#   ~/start-ai.sh stop
+#   ~/start-ai.sh            démarre (ou vérifie) tout
+#   ~/start-ai.sh restart    arrête puis redémarre tout
+#   ~/start-ai.sh stop       arrête tout
+#   ~/start-ai.sh status     affiche l'état
+#   ~/start-ai.sh boot       démarrage automatique au boot (app Termux:Boot)
 
 PORT=8080
 MODEL_PORT=8081
@@ -22,15 +26,25 @@ SNAP_LLAMA_DIR="${LUEUR_SNAP_LLAMA_DIR:-$HOME/llama-snapdragon}"
 MODEL_DIR="${LUEUR_MODEL_DIR:-$HOME/models}"
 DEFAULT_LOCAL_MODEL_ID="${LUEUR_DEFAULT_MODEL:-local::qwen2.5-7b-instruct-q4_0}"
 ROUTER_SCRIPT="$HOME/lueur-router.py"
+ROUTER_URL="https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/model-router.py"
 
 ROUTER_LOG="$HOME/lueur-router.log"
 MODEL_LOG="$HOME/llama-model.log"
+DOWNLOAD_LOG="$HOME/lueur-model-download.log"
+PREFETCH_LOG="$HOME/lueur-prefetch.log"
 TUNNEL_LOG="$HOME/ngrok.log"
+SUPERVISOR_LOG="$HOME/lueur-supervisor.log"
 URL_FILE="$HOME/ai-url.txt"
 ENV_FILE="$HOME/.lueur.env"
 
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
 # Configuration persistante facultative dans ~/.lueur.env :
 #   export LUEUR_NGROK_URL='https://mon-domaine.ngrok.app'
+#   export LUEUR_PREFETCH=all        # all | default | none (modèles pré-téléchargés)
+#   export LUEUR_IDLE_UNLOAD=600     # secondes avant de décharger le modèle local (0 = jamais)
+#   export LUEUR_CLOUD_UNLOAD=0      # 1 = décharger le modèle local dès qu'un modèle cloud sert
+#   export LUEUR_SUPERVISE=1         # 0 = pas de relance automatique
 #
 # Fournisseurs cloud (ajoutez uniquement ceux que vous utilisez) :
 #   export GROQ_API_KEY='...'
@@ -51,13 +65,26 @@ ENV_FILE="$HOME/.lueur.env"
 #   proot-distro login debian
 #   ~/ngrok config add-authtoken TON_TOKEN
 if [ -f "$ENV_FILE" ]; then
+  # Le fichier contient des clés API : lisible par ce seul utilisateur.
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
   # shellcheck disable=SC1090
   . "$ENV_FILE"
 fi
 
 LUEUR_NGROK_URL="${LUEUR_NGROK_URL:-https://expansile-ramiro-intertribal.ngrok-free.dev}"
+LUEUR_PREFETCH="${LUEUR_PREFETCH:-all}"
+LUEUR_IDLE_UNLOAD="${LUEUR_IDLE_UNLOAD:-600}"
+LUEUR_CLOUD_UNLOAD="${LUEUR_CLOUD_UNLOAD:-0}"
+LUEUR_SUPERVISE="${LUEUR_SUPERVISE:-1}"
+SUPERVISE_INTERVAL=30
+LOG_MAX_BYTES=5242880
 
-ROUTER_PAT='lueur-router\.py'
+# Le router principal est lancé sans argument ; `--download` est le
+# pré-téléchargement, qui ne doit pas être confondu avec lui.
+ROUTER_PAT='lueur-router\.py$'
+PREFETCH_PAT='lueur-router\.py --download'
+MODEL_CURL_PAT='curl .*\.gguf\.part'
+SUPERVISOR_PAT="$(basename "$0" | sed 's/\./\\./g') supervise"
 LS_PAT='(^|/)llama-server( |$)'
 NGROK_PAT='ngrok .*http .*8080'
 SERVEO_PAT='ssh .*serveo\.net'
@@ -68,16 +95,16 @@ health_ok() {
   curl -fsS -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
 }
 
-model_health_ok() {
-  curl -fsS -m 3 "http://127.0.0.1:$MODEL_PORT/health" 2>/dev/null | grep -q '"status":"ok"'
-}
-
 ui_ok() {
   curl -s -m 3 "http://127.0.0.1:$PORT/" | grep -q '<title>Lueur</title>'
 }
 
 router_running() {
   pgrep -f "$ROUTER_PAT" >/dev/null 2>&1
+}
+
+supervisor_running() {
+  pgrep -f "$SUPERVISOR_PAT" >/dev/null 2>&1
 }
 
 tunnel_running() {
@@ -101,6 +128,26 @@ public_health_ok() {
   curl -fsS -m 10 "$url/health" 2>/dev/null | grep -q '"status"'
 }
 
+log_line() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+# Garde une génération précédente du journal (.1) au lieu de l'effacer.
+rotate_log() {
+  [ -s "$1" ] && mv -f "$1" "$1.1"
+  : > "$1"
+}
+
+# Pour un journal ouvert en ajout par un processus vivant : copie puis vide.
+trim_log() {
+  local size
+  [ -f "$1" ] || return 0
+  size="$(wc -c < "$1")"
+  if [ "${size:-0}" -gt "$LOG_MAX_BYTES" ]; then
+    cp -f "$1" "$1.1" && : > "$1"
+  fi
+}
+
 stop_proc() {
   pkill -f "$1" 2>/dev/null || return 0
   for _ in $(seq 1 15); do
@@ -122,10 +169,7 @@ stop_ngrok() {
   stop_proc "$NGROK_PAT"
 }
 
-stop_all() {
-  stop_proc "$ROUTER_PAT"
-  stop_proc "$LS_PAT"
-
+stop_tunnels() {
   # Nettoie le tunnel actuel ainsi que les anciennes solutions.
   stop_ngrok
   stop_proc "$SERVEO_PAT"
@@ -133,14 +177,228 @@ stop_all() {
   stop_proc "$CF_PAT"
 }
 
+stop_all() {
+  # Le superviseur d'abord, sinon il relancerait ce qu'on arrête.
+  stop_proc "$SUPERVISOR_PAT"
+  stop_proc "$PREFETCH_PAT"
+  stop_proc "$ROUTER_PAT"
+  stop_proc "$LS_PAT"
+  # curl continue sinon d'écrire le .part après la mort du router.
+  stop_proc "$MODEL_CURL_PAT"
+  stop_tunnels
+}
+
+start_router() {
+  stop_proc "$ROUTER_PAT"
+  rotate_log "$ROUTER_LOG"
+
+  nohup env \
+    LUEUR_ROUTER_HOST=127.0.0.1 \
+    LUEUR_ROUTER_PORT="$PORT" \
+    LUEUR_MODEL_PORT="$MODEL_PORT" \
+    LUEUR_CTX="$CTX" \
+    LUEUR_THREADS="$THREADS" \
+    LUEUR_THINKING="${LUEUR_THINKING:-0}" \
+    LUEUR_IDLE_UNLOAD="$LUEUR_IDLE_UNLOAD" \
+    LUEUR_CLOUD_UNLOAD="$LUEUR_CLOUD_UNLOAD" \
+    LUEUR_UI_DIR="$UI_DIR" \
+    LUEUR_LLAMA_DIR="$LLAMA_DIR" \
+    LUEUR_SNAP_LLAMA_DIR="$SNAP_LLAMA_DIR" \
+    LUEUR_MODEL_DIR="$MODEL_DIR" \
+    LUEUR_MODEL_LOG="$MODEL_LOG" \
+    LUEUR_DOWNLOAD_LOG="$DOWNLOAD_LOG" \
+    LUEUR_DEFAULT_MODEL="$DEFAULT_LOCAL_MODEL_ID" \
+    GROQ_API_KEY="${GROQ_API_KEY:-}" \
+    GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+    MISTRAL_API_KEY="${MISTRAL_API_KEY:-}" \
+    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
+    HF_TOKEN="${HF_TOKEN:-}" \
+    NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
+    COHERE_API_KEY="${COHERE_API_KEY:-}" \
+    AI_GATEWAY_API_KEY="${AI_GATEWAY_API_KEY:-}" \
+    CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-}" \
+    CLOUDFLARE_AI_API_TOKEN="${CLOUDFLARE_AI_API_TOKEN:-}" \
+    python "$ROUTER_SCRIPT" \
+    >> "$ROUTER_LOG" 2>&1 &
+
+  for _ in $(seq 1 60); do
+    health_ok && return 0
+    if ! router_running; then
+      echo "❌ Le router s'est arrêté. Dernières lignes :"
+      tail -n 30 "$ROUTER_LOG"
+      return 1
+    fi
+    sleep 1
+  done
+
+  health_ok || {
+    echo "❌ Router non disponible"
+    tail -n 30 "$ROUTER_LOG"
+    return 1
+  }
+}
+
+start_tunnel() {
+  stop_tunnels
+  rotate_log "$TUNNEL_LOG"
+
+  nohup proot-distro login debian -- \
+    /root/ngrok http "$PORT" \
+      --url "$LUEUR_NGROK_URL" \
+      --log=stdout \
+      --log-format=json \
+    >> "$TUNNEL_LOG" 2>&1 &
+
+  for _ in $(seq 1 40); do
+    [ -n "$(tunnel_url)" ] && return 0
+    sleep 1
+  done
+
+  echo "❌ ngrok n'est pas devenu disponible."
+  echo "Dernières lignes :"
+  tail -n 30 "$TUNNEL_LOG"
+  echo
+  echo "Vérifie que l'authtoken est bien configuré dans Debian :"
+  echo "  proot-distro login debian"
+  echo "  ~/ngrok config add-authtoken TON_TOKEN_NGROK"
+  return 1
+}
+
+# Pré-téléchargement en arrière-plan. La liste des modèles vient du router
+# (source unique) et un verrou par fichier évite tout conflit avec un
+# téléchargement à la demande lancé par le router.
+start_prefetch() {
+  case "$LUEUR_PREFETCH" in
+    none|0) return 0 ;;
+  esac
+  pgrep -f "$PREFETCH_PAT" >/dev/null 2>&1 && return 0
+
+  echo "⬇️  Modèles locaux ($LUEUR_PREFETCH) : vérification/téléchargement en arrière-plan"
+  echo "💽 Espace disponible : $(df -h "$MODEL_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+  nohup env \
+    LUEUR_MODEL_DIR="$MODEL_DIR" \
+    LUEUR_DOWNLOAD_LOG="$DOWNLOAD_LOG" \
+    LUEUR_DEFAULT_MODEL="$DEFAULT_LOCAL_MODEL_ID" \
+    python "$ROUTER_SCRIPT" --download "$LUEUR_PREFETCH" \
+    >> "$PREFETCH_LOG" 2>&1 &
+}
+
+supervise() {
+  local router_fails=0
+  local tunnel_fails=0
+
+  log_line "Superviseur démarré (vérification toutes les ${SUPERVISE_INTERVAL}s)"
+  while true; do
+    sleep "$SUPERVISE_INTERVAL"
+
+    if router_running && health_ok; then
+      router_fails=0
+    else
+      router_fails=$((router_fails + 1))
+      # /health ne bloque plus pendant un chargement : 3 échecs d'affilée
+      # (~90 s) signifient vraiment que le router est tombé.
+      if [ "$router_fails" -ge 3 ]; then
+        log_line "Router indisponible, redémarrage..."
+        if start_router; then
+          log_line "Router relancé"
+        else
+          log_line "Échec de la relance du router"
+        fi
+        router_fails=0
+      fi
+    fi
+
+    if tunnel_running; then
+      tunnel_fails=0
+    else
+      tunnel_fails=$((tunnel_fails + 1))
+      if [ "$tunnel_fails" -ge 2 ]; then
+        log_line "Tunnel ngrok indisponible, redémarrage..."
+        if start_tunnel; then
+          log_line "Tunnel relancé : $(tunnel_url)"
+        else
+          log_line "Échec de la relance du tunnel"
+        fi
+        tunnel_fails=0
+      fi
+    fi
+
+    trim_log "$ROUTER_LOG"
+    trim_log "$TUNNEL_LOG"
+    trim_log "$PREFETCH_LOG"
+    trim_log "$DOWNLOAD_LOG"
+    trim_log "$SUPERVISOR_LOG"
+  done
+}
+
+start_supervisor() {
+  [ "$LUEUR_SUPERVISE" = "1" ] || return 0
+  supervisor_running && return 0
+  nohup bash "$SELF" supervise >> "$SUPERVISOR_LOG" 2>&1 &
+}
+
+install_boot() {
+  local boot_dir="$HOME/.termux/boot"
+  local boot_file="$boot_dir/start-lueur"
+  mkdir -p "$boot_dir"
+  cat > "$boot_file" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# Généré par start-ai.sh boot : lance Lueur au démarrage du téléphone.
+termux-wake-lock
+exec bash "$SELF" > "\$HOME/lueur-boot.log" 2>&1
+EOF
+  chmod +x "$boot_file"
+  echo "✅ Démarrage automatique installé : $boot_file"
+  echo "   Installe l'app Termux:Boot (F-Droid) et ouvre-la une fois pour l'activer."
+}
+
+print_status() {
+  if health_ok; then
+    curl -fsS -m 3 "http://127.0.0.1:$PORT/health" | python -c 'import json,sys
+d=json.load(sys.stdin)
+print("✅ Router actif")
+print("   Modèle local chargé :", d.get("active_model") or "aucun")
+if d.get("loading_model"):
+    print("   Chargement en cours :", d["loading_model"])'
+  else
+    echo "❌ Router indisponible"
+  fi
+  local url
+  url="$(tunnel_url)"
+  if [ -n "$url" ]; then echo "✅ Tunnel : $url"; else echo "❌ Tunnel inactif"; fi
+  if supervisor_running; then echo "✅ Superviseur actif"; else echo "⚪ Superviseur arrêté"; fi
+  if pgrep -f "$PREFETCH_PAT" >/dev/null 2>&1; then
+    echo "⬇️  Pré-téléchargement en cours : tail -f $PREFETCH_LOG"
+  fi
+}
+
 case "${1:-}" in
   stop)
     stop_all
-    echo "🛑 Lueur, modèle IA et tunnels arrêtés"
+    command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock 2>/dev/null
+    echo "🛑 Lueur, modèle IA, téléchargements et tunnels arrêtés"
     exit 0
     ;;
   restart)
     stop_all
+    ;;
+  status)
+    print_status
+    exit 0
+    ;;
+  boot)
+    install_boot
+    exit 0
+    ;;
+  supervise)
+    supervise
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Usage : $0 [restart|stop|status|boot]"
+    exit 1
     ;;
 esac
 
@@ -160,108 +418,6 @@ if [ ! -x "$SNAP_LLAMA_DIR/bin/llama-server" ]; then
 fi
 
 mkdir -p "$MODEL_DIR"
-echo "📦 Modèles locaux : vérification/téléchargement complet dans $MODEL_DIR"
-echo "💽 Espace disponible :"
-df -h "$MODEL_DIR" 2>/dev/null | tail -n 1 || true
-
-download_model() {
-  local label="$1"
-  local filename="$2"
-  local url="$3"
-  local target="$MODEL_DIR/$filename"
-  local part="$target.part"
-  local ok=0
-
-  if [ -s "$target" ]; then
-    echo "✅ $label déjà téléchargé"
-    return 0
-  fi
-
-  echo
-  echo "⬇️  $label"
-  echo "   → $filename"
-
-  for attempt in $(seq 1 20); do
-    if [ -f "$part" ]; then
-      local current_size
-      current_size="$(du -h "$part" 2>/dev/null | cut -f1)"
-      echo "↩️  Reprise tentative $attempt/20 depuis ${current_size:-0}"
-    else
-      echo "⬇️  Tentative $attempt/20"
-    fi
-
-    if curl -L --fail \
-        --connect-timeout 30 \
-        --retry 5 \
-        --retry-delay 5 \
-        --retry-all-errors \
-        -C - \
-        -o "$part" \
-        "$url"; then
-      ok=1
-      break
-    fi
-
-    echo "⚠️  Connexion interrompue, reprise dans 5 secondes..."
-    sleep 5
-  done
-
-  if [ "$ok" != "1" ]; then
-    echo "❌ Téléchargement de $label interrompu après 20 tentatives"
-    echo "   Fichier partiel conservé : $part"
-    return 1
-  fi
-
-  mv "$part" "$target"
-  echo "✅ $label téléchargé"
-}
-
-DOWNLOAD_FAILED=0
-
-download_model \
-  "Phi-4 Mini 3.8B Q4_0" \
-  "microsoft_Phi-4-mini-instruct-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_0.gguf" \
-  || DOWNLOAD_FAILED=1
-
-download_model \
-  "Qwen2.5 7B Q4_0" \
-  "Qwen2.5-7B-Instruct-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_0.gguf" \
-  || DOWNLOAD_FAILED=1
-
-download_model \
-  "Qwen3 8B Q4_0" \
-  "Qwen3-8B-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_0.gguf" \
-  || DOWNLOAD_FAILED=1
-
-download_model \
-  "Qwen2.5 Coder 7B Q4_0" \
-  "Qwen2.5-Coder-7B-Instruct-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_0.gguf" \
-  || DOWNLOAD_FAILED=1
-
-download_model \
-  "Qwen3.5 9B Q4_0" \
-  "Qwen_Qwen3.5-9B-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/main/Qwen_Qwen3.5-9B-Q4_0.gguf" \
-  || DOWNLOAD_FAILED=1
-
-download_model \
-  "DeepSeek R1 Qwen 7B Q4_0" \
-  "DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf" \
-  "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf" \
-  || DOWNLOAD_FAILED=1
-
-echo
-if [ "$DOWNLOAD_FAILED" = "1" ]; then
-  echo "⚠️  Au moins un modèle n'a pas fini de se télécharger."
-  echo "   Les fichiers .part sont conservés. Relance ~/start-ai.sh restart pour reprendre."
-  exit 1
-fi
-
-echo "✅ Les 6 modèles locaux sont présents."
 
 # --- Bibliothèques Qualcomm requises par le build Snapdragon sous Termux ---
 mkdir -p "$SNAP_LLAMA_DIR/lib"
@@ -299,69 +455,47 @@ else
 fi
 
 # --- Router Python Android-compatible ---
+# Téléchargé dans un fichier temporaire, validé, puis remplacé d'un coup :
+# un réseau absent ou une copie tronquée ne casse jamais la version locale.
 echo "🧭 Mise à jour du router..."
-if ! curl -fsSL https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/model-router.py \
-  -o "$ROUTER_SCRIPT"; then
-  echo "❌ Impossible de télécharger le router"
-  exit 1
+ROUTER_UPDATED=0
+ROUTER_TMP="$ROUTER_SCRIPT.new"
+if curl -fsSL -m 60 "$ROUTER_URL" -o "$ROUTER_TMP" \
+  && python -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$ROUTER_TMP" 2>/dev/null; then
+  if [ -f "$ROUTER_SCRIPT" ] && cmp -s "$ROUTER_TMP" "$ROUTER_SCRIPT"; then
+    rm -f "$ROUTER_TMP"
+    echo "✅ Router déjà à jour"
+  else
+    chmod +x "$ROUTER_TMP"
+    mv -f "$ROUTER_TMP" "$ROUTER_SCRIPT"
+    ROUTER_UPDATED=1
+    echo "✅ Router mis à jour"
+  fi
+else
+  rm -f "$ROUTER_TMP"
+  if [ -f "$ROUTER_SCRIPT" ]; then
+    echo "⚠️  Mise à jour du router impossible (version locale conservée)"
+  else
+    echo "❌ Impossible de télécharger le router et aucune copie locale"
+    exit 1
+  fi
 fi
-chmod +x "$ROUTER_SCRIPT"
 
 # --- Les modèles locaux sont démarrés à la demande par le router ---
 if health_ok && router_running; then
   echo "✅ Router IA déjà actif"
+  if [ "$ROUTER_UPDATED" = "1" ]; then
+    # Pas de redémarrage automatique : il couperait les générations en cours.
+    echo "⚠️  Nouvelle version du router téléchargée : ~/start-ai.sh restart pour l'appliquer"
+  fi
 else
-  stop_proc "$ROUTER_PAT"
-
   echo "🤖 Démarrage du router multi-modèles Android..."
-  : > "$ROUTER_LOG"
-
-  nohup env \
-    LUEUR_ROUTER_HOST=127.0.0.1 \
-    LUEUR_ROUTER_PORT="$PORT" \
-    LUEUR_MODEL_PORT="$MODEL_PORT" \
-    LUEUR_CTX="$CTX" \
-    LUEUR_THREADS="$THREADS" \
-    LUEUR_THINKING="${LUEUR_THINKING:-0}" \
-    LUEUR_UI_DIR="$UI_DIR" \
-    LUEUR_LLAMA_DIR="$LLAMA_DIR" \
-    LUEUR_SNAP_LLAMA_DIR="$SNAP_LLAMA_DIR" \
-    LUEUR_MODEL_DIR="$MODEL_DIR" \
-    LUEUR_MODEL_LOG="$MODEL_LOG" \
-    LUEUR_DOWNLOAD_LOG="$HOME/lueur-model-download.log" \
-    LUEUR_DEFAULT_MODEL="$DEFAULT_LOCAL_MODEL_ID" \
-    GROQ_API_KEY="${GROQ_API_KEY:-}" \
-    GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
-    MISTRAL_API_KEY="${MISTRAL_API_KEY:-}" \
-    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
-    HF_TOKEN="${HF_TOKEN:-}" \
-    NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
-    COHERE_API_KEY="${COHERE_API_KEY:-}" \
-    AI_GATEWAY_API_KEY="${AI_GATEWAY_API_KEY:-}" \
-    CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-}" \
-    CLOUDFLARE_AI_API_TOKEN="${CLOUDFLARE_AI_API_TOKEN:-}" \
-    python "$ROUTER_SCRIPT" \
-    > "$ROUTER_LOG" 2>&1 &
-
-  echo "⏳ Initialisation du router..."
-  for _ in $(seq 1 60); do
-    health_ok && break
-    if ! router_running; then
-      echo "❌ Le router s'est arrêté. Dernières lignes :"
-      tail -n 30 "$ROUTER_LOG"
-      exit 1
-    fi
-    sleep 1
-  done
-fi
-
-if ! health_ok; then
-  echo "❌ Router non disponible"
-  tail -n 30 "$ROUTER_LOG"
-  exit 1
+  start_router || exit 1
 fi
 
 echo "✅ Router prêt"
+
+start_prefetch
 
 # --- Tunnel ngrok via Debian/proot ---
 if ! command -v proot-distro >/dev/null 2>&1; then
@@ -373,61 +507,40 @@ if ! command -v proot-distro >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! proot-distro login debian -- true >/dev/null 2>&1; then
-  echo "❌ Le conteneur Debian proot n'est pas installé."
-  echo
-  echo "Installe-le avec :"
-  echo "  proot-distro install debian"
-  exit 1
-fi
+# Une seule entrée dans proot (lente) pour vérifier Debian et ngrok.
+PROOT_STATE="$(proot-distro login debian -- sh -c 'test -x /root/ngrok && echo ngrok-ok || echo ngrok-missing' 2>/dev/null)"
 
-if ! proot-distro login debian -- test -x /root/ngrok >/dev/null 2>&1; then
-  echo "❌ ngrok n'est pas installé dans Debian/proot."
-  echo
-  echo "Entre dans Debian et installe ngrok :"
-  echo "  proot-distro login debian"
-  echo "  apt update && apt install -y curl ca-certificates"
-  echo "  cd /root"
-  echo "  curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz"
-  echo "  chmod +x /root/ngrok"
-  echo "  /root/ngrok config add-authtoken TON_TOKEN_NGROK"
-  exit 1
-fi
+case "$PROOT_STATE" in
+  *ngrok-ok*) ;;
+  *ngrok-missing*)
+    echo "❌ ngrok n'est pas installé dans Debian/proot."
+    echo
+    echo "Entre dans Debian et installe ngrok :"
+    echo "  proot-distro login debian"
+    echo "  apt update && apt install -y curl ca-certificates"
+    echo "  cd /root"
+    echo "  curl -fsSL https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz | tar -xz"
+    echo "  chmod +x /root/ngrok"
+    echo "  /root/ngrok config add-authtoken TON_TOKEN_NGROK"
+    exit 1
+    ;;
+  *)
+    echo "❌ Le conteneur Debian proot n'est pas installé."
+    echo
+    echo "Installe-le avec :"
+    echo "  proot-distro install debian"
+    exit 1
+    ;;
+esac
 
 if tunnel_running; then
   echo "🌐 Tunnel ngrok déjà actif"
 else
-  stop_ngrok
-  stop_proc "$SERVEO_PAT"
-  stop_proc "$LHR_PAT"
-  stop_proc "$CF_PAT"
-
   echo "🌐 Ouverture du tunnel ngrok via Debian/proot..."
-  : > "$TUNNEL_LOG"
-
-  nohup proot-distro login debian -- \
-    /root/ngrok http "$PORT" \
-      --url "$LUEUR_NGROK_URL" \
-      --log=stdout \
-      --log-format=json \
-    > "$TUNNEL_LOG" 2>&1 &
-
-  for _ in $(seq 1 40); do
-    [ -n "$(tunnel_url)" ] && break
-    sleep 1
-  done
-
-  if [ -z "$(tunnel_url)" ]; then
-    echo "❌ ngrok n'est pas devenu disponible."
-    echo "Dernières lignes :"
-    tail -n 30 "$TUNNEL_LOG"
-    echo
-    echo "Vérifie que l'authtoken est bien configuré dans Debian :"
-    echo "  proot-distro login debian"
-    echo "  ~/ngrok config add-authtoken TON_TOKEN_NGROK"
-    exit 1
-  fi
+  start_tunnel || exit 1
 fi
+
+start_supervisor
 
 URL="$(tunnel_url)"
 
@@ -436,44 +549,29 @@ ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🤖 Modèles disponibles :"
-echo "   🏠 Local NPU   : Phi-4 Mini 3.8B Q4_0"
-echo "                  Qwen2.5 7B Q4_0"
-echo "                  Qwen3 8B Q4_0"
-echo "                  Qwen2.5 Coder 7B Q4_0"
-echo "                  Qwen3.5 9B Q4_0"
-echo "                  DeepSeek R1 Qwen 7B Q4_0"
-echo "                  Backend : Hexagon HTP0"
-echo "   ⚡ Groq        : GPT-OSS 120B, Qwen 3.8 27B"
-echo "   ✨ Gemini      : Gemini 3.8 Flash"
-echo "   🇫🇷 Mistral    : Mistral Small"
-echo "   🌐 OpenRouter  : Free Router"
-echo "   ☁️ Workers AI  : GPT-OSS 120B"
-echo "   🤗 HuggingFace : DeepSeek R1"
-echo "   🟢 NVIDIA NIM  : DeepSeek V4.1 Flash, GLM-5.3, GLM-5.3 Flash"
-echo "                    Nemotron 3.5 Lightning, Nemotron 3 Super 120B"
-echo "                    GPT-OSS 20B, Gemma 4 31B, Muse Glimmer 30B"
-echo "   🟣 Cohere      : Command A+"
-echo "   ▲ Vercel      : Ling 3.0 Flash VL Free"
-echo
-echo "💾 Un seul modèle local NPU est chargé à la fois ; les autres restent sur le stockage."
-echo "⬇️ Tous les modèles locaux sont pré-téléchargés au démarrage avec reprise automatique."
-echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
-echo
-
-PROVIDER_COUNT=0
-[ -n "${GROQ_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${GEMINI_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${MISTRAL_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${OPENROUTER_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${HF_TOKEN:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${NVIDIA_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${COHERE_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-[ -n "${AI_GATEWAY_API_KEY:-}" ] && PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] && [ -n "${CLOUDFLARE_AI_API_TOKEN:-}" ]; then
-  PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
-fi
-echo "🔐 Fournisseurs cloud configurés : $PROVIDER_COUNT/9"
+# La liste vient du router : plus de copie à maintenir dans ce script.
+curl -fsS -m 5 "http://127.0.0.1:$PORT/models" 2>/dev/null | python -c 'import json,sys
+try:
+    models = json.load(sys.stdin)["models"]
+except Exception:
+    print("   (liste indisponible)")
+    raise SystemExit
+groups = {}
+for m in models:
+    groups.setdefault(m["provider_label"], {"ok": m["configured"], "names": []})["names"].append(m["label"])
+cloud = [g for label, g in groups.items() if not label.startswith("Local")]
+for label, g in groups.items():
+    mark = "✅" if g["ok"] else "⚪"
+    print("   %s %-24s: %s" % (mark, label, ", ".join(g["names"])))
+print()
+print("🔐 Fournisseurs cloud configurés : %d/%d" % (sum(g["ok"] for g in cloud), len(cloud)))'
 echo "   Configuration : $ENV_FILE"
+echo
+echo "💾 Un seul modèle local NPU est chargé à la fois ; déchargé après ${LUEUR_IDLE_UNLOAD}s d'inactivité."
+echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
+if [ "$LUEUR_SUPERVISE" = "1" ]; then
+  echo "🛡️ Superviseur actif : router et tunnel relancés automatiquement."
+fi
 echo
 
 if [ -n "$URL" ]; then
@@ -503,6 +601,8 @@ echo "🛠️ ngrok UI : http://127.0.0.1:4040"
 echo
 echo "Logs router : tail -f $ROUTER_LOG"
 echo "Logs modèle : tail -f $MODEL_LOG"
-echo "Téléchargements : tail -f $HOME/lueur-model-download.log"
+echo "Téléchargements : tail -f $DOWNLOAD_LOG"
+echo "Pré-téléchargement : tail -f $PREFETCH_LOG"
 echo "Logs tunnel : tail -f $TUNNEL_LOG"
+echo "Superviseur : tail -f $SUPERVISOR_LOG"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

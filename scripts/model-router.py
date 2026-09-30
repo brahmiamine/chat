@@ -13,10 +13,12 @@ llama-server model process loaded at a time.
 from __future__ import annotations
 
 import atexit
+import fcntl
 import http.client
 import json
 import mimetypes
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,9 +26,10 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 HOST = os.environ.get("LUEUR_ROUTER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUEUR_ROUTER_PORT", "8080"))
@@ -277,11 +280,29 @@ MODEL_ALIASES = {
 
 ALLOWED_ORIGIN = "https://brahmiamine.github.io"
 LOAD_TIMEOUT = 1800
+# Décharge le modèle local NPU après N secondes sans requête (0 = jamais).
+IDLE_UNLOAD = int(os.environ.get("LUEUR_IDLE_UNLOAD", "600"))
+# 1 = libérer la RAM du modèle local dès qu'un modèle cloud est utilisé.
+# Par défaut le modèle local reste chargé (pas de rechargement lent en
+# alternant cloud/local) et c'est le délai d'inactivité qui le décharge.
+CLOUD_UNLOADS_LOCAL = os.environ.get("LUEUR_CLOUD_UNLOAD", "0") == "1"
+# Marge d'espace disque gardée libre après un téléchargement de modèle.
+DISK_MARGIN = 512 * 1024 * 1024
 
+# _model_lock protège le cycle de vie du processus llama-server (chargement,
+# arrêt). Il n'est jamais nécessaire pour *lire* l'état : /health et /models
+# restent donc réactifs pendant un chargement ou un téléchargement.
 _model_lock = threading.RLock()
 _model_proc: subprocess.Popen | None = None
 _model_log_handle = None
 _active_model: str | None = None
+_loading_model: str | None = None
+
+# Nombre de requêtes en cours sur le modèle local et date de dernière
+# utilisation, pour ne jamais décharger un modèle en pleine génération.
+_usage_lock = threading.Lock()
+_model_users = 0
+_model_last_used = time.monotonic()
 
 # Background generation jobs are owned by the router, not by the browser
 # connection. This lets llama.cpp keep generating even if the tab/browser is
@@ -589,7 +610,7 @@ def set_job_terminal(
 
 def run_generation_job(job: GenerationJob, body: dict) -> None:
     # llama-server uses -np 1; serialize background generations accordingly.
-    with _generation_lock:
+    with _generation_lock, local_model_use(str(body.get("model") or DEFAULT_MODEL)):
         conn: http.client.HTTPConnection | None = None
         with job.cond:
             job.upstream_started_at = time.time()
@@ -809,8 +830,10 @@ def open_completion(
         path = "/v1/chat/completions"
         headers = provider_headers("local")
     else:
-        # Cloud inference does not need a GGUF model occupying phone RAM.
-        stop_model()
+        if CLOUD_UNLOADS_LOCAL:
+            # Libère la RAM du téléphone, sauf si le modèle local est en
+            # cours de chargement ou sert encore une autre requête.
+            try_unload_model()
         upstream["model"] = str(meta.get("remote_id") or model_id)
         if provider == "cohere" and isinstance(upstream.get("messages"), list):
             upstream["messages"] = [
@@ -845,7 +868,62 @@ def model_health() -> bool:
         return False
 
 
+def resolve_model_id(model_id: str) -> str:
+    model_id = MODEL_ALIASES.get(model_id, model_id)
+    return DEFAULT_MODEL if model_id == "local" else model_id
+
+
+@contextmanager
+def local_model_use(model_id: str) -> Iterator[None]:
+    """Marque le modèle local comme utilisé pendant toute une requête.
+
+    À ouvrir *avant* ensure_model() : le déchargement pour inactivité voit
+    ainsi la requête et ne coupe jamais une génération en cours.
+    """
+    global _model_users, _model_last_used
+
+    if provider_name(resolve_model_id(model_id)) != "local":
+        yield
+        return
+
+    with _usage_lock:
+        _model_users += 1
+    try:
+        yield
+    finally:
+        with _usage_lock:
+            _model_users -= 1
+            _model_last_used = time.monotonic()
+
+
 def stop_model() -> None:
+    with _model_lock:
+        _stop_model_locked()
+
+
+def try_unload_model(min_idle: float = 0) -> bool:
+    """Décharge le modèle local s'il est libre, sans jamais attendre.
+
+    Ne fait rien si un chargement tient le verrou, si une requête utilise
+    encore le modèle, ou s'il a servi il y a moins de `min_idle` secondes.
+    """
+    if not _model_lock.acquire(blocking=False):
+        return False
+    try:
+        if _model_proc is None:
+            return False
+        with _usage_lock:
+            busy = _model_users
+            idle_for = time.monotonic() - _model_last_used
+        if busy or idle_for < min_idle:
+            return False
+        _stop_model_locked()
+        return True
+    finally:
+        _model_lock.release()
+
+
+def _stop_model_locked() -> None:
     global _model_proc, _model_log_handle, _active_model
 
     proc = _model_proc
@@ -872,6 +950,31 @@ def stop_model() -> None:
         _model_log_handle = None
 
 
+def remote_size(url: str) -> int | None:
+    """Taille du fichier distant (après redirections), ou None si inconnue."""
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=20) as res:
+            return _integer(res.headers.get("Content-Length"))
+    except Exception:
+        return None
+
+
+def check_disk_space(url: str, part_path: Path, label: str) -> None:
+    size = remote_size(url)
+    if not size:
+        return
+    resumed = part_path.stat().st_size if part_path.exists() else 0
+    needed = max(0, size - resumed) + DISK_MARGIN
+    free = shutil.disk_usage(MODEL_DIR).free
+    if free < needed:
+        gib = 1024 ** 3
+        raise RuntimeError(
+            f"Espace insuffisant pour {label}: {needed / gib:.1f} GiB nécessaires, "
+            f"{free / gib:.1f} GiB libres dans {MODEL_DIR}"
+        )
+
+
 def ensure_model_file(
     meta: dict[str, object],
     keepalive: Callable[[], None] | None = None,
@@ -883,63 +986,86 @@ def ensure_model_file(
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     model_path = (MODEL_DIR / filename).resolve()
-    if model_path.exists() and model_path.is_file():
+    if model_path.is_file():
         return model_path
 
     part_path = Path(str(model_path) + ".part")
+    lock_path = Path(str(model_path) + ".lock")
     DOWNLOAD_LOG.parent.mkdir(parents=True, exist_ok=True)
     label = str(meta.get("label") or filename)
-    log(f"Téléchargement à la demande: {label}")
 
-    for attempt in range(1, 21):
-        resumed = part_path.stat().st_size if part_path.exists() else 0
-        log(
-            f"Téléchargement {label}: tentative {attempt}/20"
-            + (f", reprise à {resumed / (1024 ** 3):.2f} GiB" if resumed else "")
-        )
-
-        args = [
-            "curl",
-            "-L",
-            "--fail",
-            "--connect-timeout", "30",
-            "--retry", "5",
-            "--retry-delay", "5",
-            "--retry-all-errors",
-            "-C", "-",
-            "-o", str(part_path),
-            url,
-        ]
-
-        with DOWNLOAD_LOG.open("a", encoding="utf-8") as download_log:
-            download_log.write(
-                f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {label} tentative {attempt}/20\n"
-            )
-            download_log.flush()
-            proc = subprocess.Popen(
-                args,
-                stdout=download_log,
-                stderr=subprocess.STDOUT,
-            )
-
-            last_keepalive = 0.0
-            while proc.poll() is None:
-                now = time.monotonic()
-                if keepalive and now - last_keepalive >= 2:
+    # Verrou inter-processus : le pré-téléchargement lancé par start-ai.sh et
+    # un téléchargement à la demande du router n'écrivent jamais en même temps
+    # dans le même fichier .part.
+    with lock_path.open("a") as lock_file:
+        waiting_logged = False
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not waiting_logged:
+                    log(f"Téléchargement de {label} déjà en cours, attente...")
+                    waiting_logged = True
+                if keepalive:
                     keepalive()
-                    last_keepalive = now
-                time.sleep(1)
+                time.sleep(2)
 
-        if proc.returncode == 0:
-            part_path.replace(model_path)
-            log(f"Téléchargement terminé: {model_path.name}")
+        if model_path.is_file():
             return model_path
 
-        log(f"Téléchargement interrompu pour {label}; reprise dans 5 s")
-        for _ in range(5):
-            if keepalive:
-                keepalive()
-            time.sleep(1)
+        check_disk_space(url, part_path, label)
+        log(f"Téléchargement: {label}")
+
+        for attempt in range(1, 21):
+            resumed = part_path.stat().st_size if part_path.exists() else 0
+            log(
+                f"Téléchargement {label}: tentative {attempt}/20"
+                + (f", reprise à {resumed / (1024 ** 3):.2f} GiB" if resumed else "")
+            )
+
+            args = [
+                "curl",
+                "-L",
+                "--fail",
+                "--connect-timeout", "30",
+                "--retry", "5",
+                "--retry-delay", "5",
+                "--retry-all-errors",
+                "-C", "-",
+                "-o", str(part_path),
+                url,
+            ]
+
+            with DOWNLOAD_LOG.open("a", encoding="utf-8") as download_log:
+                download_log.write(
+                    f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {label} tentative {attempt}/20\n"
+                )
+                download_log.flush()
+                proc = subprocess.Popen(
+                    args,
+                    stdout=download_log,
+                    stderr=subprocess.STDOUT,
+                )
+
+                last_keepalive = 0.0
+                while proc.poll() is None:
+                    now = time.monotonic()
+                    if keepalive and now - last_keepalive >= 2:
+                        keepalive()
+                        last_keepalive = now
+                    time.sleep(1)
+
+            if proc.returncode == 0:
+                part_path.replace(model_path)
+                log(f"Téléchargement terminé: {model_path.name}")
+                return model_path
+
+            log(f"Téléchargement interrompu pour {label}; reprise dans 5 s")
+            for _ in range(5):
+                if keepalive:
+                    keepalive()
+                time.sleep(1)
 
     raise RuntimeError(
         f"Téléchargement de {label} interrompu après 20 tentatives. "
@@ -948,18 +1074,17 @@ def ensure_model_file(
 
 
 def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> None:
-    global _model_proc, _model_log_handle, _active_model
+    global _model_proc, _model_log_handle, _active_model, _loading_model
+    global _model_last_used
 
-    model_id = MODEL_ALIASES.get(model_id, model_id)
-    if model_id == "local":
-        model_id = DEFAULT_MODEL
+    model_id = resolve_model_id(model_id)
     if model_id not in MODELS:
         raise ValueError(f"Modèle inconnu: {model_id}")
 
     meta = MODELS[model_id]
     if str(meta.get("provider") or "local") != "local":
-        with _model_lock:
-            stop_model()
+        if CLOUD_UNLOADS_LOCAL:
+            try_unload_model()
         return
 
     with _model_lock:
@@ -971,80 +1096,126 @@ def ensure_model(model_id: str, keepalive: Callable[[], None] | None = None) -> 
         ):
             return
 
-        stop_model()
+        _stop_model_locked()
 
         if not SNAP_LLAMA_BIN.exists():
             raise RuntimeError(f"llama-server Snapdragon introuvable: {SNAP_LLAMA_BIN}")
 
-        model_path = ensure_model_file(meta, keepalive)
-        ubatch = int(meta.get("ubatch") or 1024)
+        _loading_model = model_id
+        try:
+            model_path = ensure_model_file(meta, keepalive)
+            ubatch = int(meta.get("ubatch") or 1024)
 
-        args = [
-            str(SNAP_LLAMA_BIN),
-            "-m", str(model_path),
-            "-ngl", "99",
-            "--device", "HTP0",
-            "-fa", "on",
-            "--ubatch-size", str(ubatch),
-            "--host", MODEL_HOST,
-            "--port", str(MODEL_PORT),
-            "-c", str(CTX),
-            "-np", "1",
-        ]
-        if THREADS > 0:
-            args += ["-t", str(THREADS)]
+            args = [
+                str(SNAP_LLAMA_BIN),
+                "-m", str(model_path),
+                "-ngl", "99",
+                "--device", "HTP0",
+                "-fa", "on",
+                "--ubatch-size", str(ubatch),
+                "--host", MODEL_HOST,
+                "--port", str(MODEL_PORT),
+                "-c", str(CTX),
+                "-np", "1",
+            ]
+            if THREADS > 0:
+                args += ["-t", str(THREADS)]
 
-        model_env = os.environ.copy()
-        runtime_lib = str(SNAP_LLAMA_DIR / "lib")
-        model_env["LD_LIBRARY_PATH"] = runtime_lib
-        model_env["ADSP_LIBRARY_PATH"] = runtime_lib
-        model_env["GGML_HEXAGON_DEVICES"] = "HTP0"
-        model_env["GGML_HEXAGON_OPPOLL"] = "1"
+            model_env = os.environ.copy()
+            runtime_lib = str(SNAP_LLAMA_DIR / "lib")
+            model_env["LD_LIBRARY_PATH"] = runtime_lib
+            model_env["ADSP_LIBRARY_PATH"] = runtime_lib
+            model_env["GGML_HEXAGON_DEVICES"] = "HTP0"
+            model_env["GGML_HEXAGON_OPPOLL"] = "1"
 
-        MODEL_LOG.parent.mkdir(parents=True, exist_ok=True)
-        _model_log_handle = MODEL_LOG.open("w", encoding="utf-8")
-        log(f"Chargement NPU: {meta['label']} ({model_path.name})")
-        _model_proc = subprocess.Popen(
-            args,
-            cwd=str(SNAP_LLAMA_DIR),
-            env=model_env,
-            stdout=_model_log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        _active_model = model_id
+            MODEL_LOG.parent.mkdir(parents=True, exist_ok=True)
+            _model_log_handle = MODEL_LOG.open("w", encoding="utf-8")
+            log(f"Chargement NPU: {meta['label']} ({model_path.name})")
+            # Référence locale : la boucle ci-dessous ne dépend pas de l'état
+            # global, même si un autre fil le consulte pendant le chargement.
+            proc = subprocess.Popen(
+                args,
+                cwd=str(SNAP_LLAMA_DIR),
+                env=model_env,
+                stdout=_model_log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            _model_proc = proc
+            _active_model = model_id
 
-        started = time.monotonic()
-        last_keepalive = 0.0
-        while time.monotonic() - started < LOAD_TIMEOUT:
-            if _model_proc.poll() is not None:
-                code = _model_proc.returncode
-                _active_model = None
-                raise RuntimeError(
-                    f"llama-server NPU s'est arrêté pendant le chargement (code {code}). "
-                    f"Voir {MODEL_LOG}"
-                )
+            started = time.monotonic()
+            last_keepalive = 0.0
+            while time.monotonic() - started < LOAD_TIMEOUT:
+                if proc.poll() is not None:
+                    code = proc.returncode
+                    _stop_model_locked()
+                    raise RuntimeError(
+                        f"llama-server NPU s'est arrêté pendant le chargement (code {code}). "
+                        f"Voir {MODEL_LOG}"
+                    )
 
-            if model_health():
-                log(f"Modèle NPU prêt: {meta['label']}")
-                return
+                if model_health():
+                    with _usage_lock:
+                        _model_last_used = time.monotonic()
+                    log(f"Modèle NPU prêt: {meta['label']}")
+                    return
 
-            now = time.monotonic()
-            if keepalive and now - last_keepalive >= 2:
-                keepalive()
-                last_keepalive = now
+                now = time.monotonic()
+                if keepalive and now - last_keepalive >= 2:
+                    keepalive()
+                    last_keepalive = now
 
-            time.sleep(1)
+                time.sleep(1)
 
-        stop_model()
-        raise TimeoutError(f"Chargement du modèle > {LOAD_TIMEOUT}s")
+            _stop_model_locked()
+            raise TimeoutError(f"Chargement du modèle > {LOAD_TIMEOUT}s")
+        finally:
+            _loading_model = None
 
 
 def active_model() -> str | None:
-    with _model_lock:
-        if _model_proc and _model_proc.poll() is None and model_health():
-            return _active_model
-        return None
+    # Lecture sans verrou : ne bloque jamais pendant un chargement.
+    proc = _model_proc
+    model_id = _active_model
+    if model_id and proc and proc.poll() is None and model_id != _loading_model and model_health():
+        return model_id
+    return None
+
+
+def idle_unload_loop() -> None:
+    while True:
+        time.sleep(15)
+        if _model_proc is None:
+            continue
+        label = _active_model
+        if try_unload_model(IDLE_UNLOAD):
+            log(f"Modèle local déchargé après {IDLE_UNLOAD}s d'inactivité: {label}")
+
+
+def download_models(target: str) -> int:
+    """Pré-télécharge des modèles locaux (utilisé par start-ai.sh)."""
+    if target == "all":
+        ids = [mid for mid, meta in MODELS.items() if meta.get("provider") == "local"]
+    elif target == "default":
+        ids = [resolve_model_id(DEFAULT_MODEL)]
+    else:
+        ids = [resolve_model_id(target)]
+
+    failed = 0
+    for model_id in ids:
+        meta = MODELS.get(model_id)
+        if not meta or meta.get("provider") != "local":
+            log(f"Modèle local inconnu: {model_id}")
+            failed += 1
+            continue
+        try:
+            path = ensure_model_file(meta)
+            log(f"✅ {meta['label']}: {path.name}")
+        except Exception as exc:
+            log(f"❌ {meta['label']}: {exc}")
+            failed += 1
+    return 1 if failed else 0
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -1052,6 +1223,10 @@ class RouterHandler(BaseHTTPRequestHandler):
     server_version = "LueurRouter/1.0"
 
     def log_message(self, fmt: str, *args) -> None:
+        # /health est interrogé toutes les 20 s par l'UI et par la
+        # supervision : ne pas en remplir le journal.
+        if self.path.startswith("/health") and " 200 " in f" {fmt % args} ":
+            return
         log(f"{self.client_address[0]} {fmt % args}")
 
     def _cors(self) -> None:
@@ -1091,6 +1266,8 @@ class RouterHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "router": "termux-python",
                 "active_model": active_model(),
+                "loading_model": _loading_model,
+                "idle_unload_s": IDLE_UNLOAD,
                 "background_generations": True,
                 "providers": provider_statuses(),
             })
@@ -1372,38 +1549,43 @@ class RouterHandler(BaseHTTPRequestHandler):
         model_id = str(body.get("model") or DEFAULT_MODEL)
         conn: http.client.HTTPConnection | None = None
         try:
-            conn, res = open_completion(model_id, body, keepalive)
-            if res.status >= 400:
-                detail = res.read().decode("utf-8", "replace")
-                payload = json.dumps(
-                    {
-                        "error": {
-                            "message": upstream_error_message(detail, res.status),
-                            "code": res.status,
-                        }
-                    },
-                    ensure_ascii=False,
-                )
-                self.wfile.write(f"data: {payload}\n\ndata: [DONE]\n\n".encode("utf-8"))
-                self.wfile.flush()
-                return
-
-            while True:
-                chunk = res.read1(4096)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
+            with local_model_use(model_id):
+                conn, res = open_completion(model_id, body, keepalive)
+                self._relay_stream(res)
         finally:
             if conn:
                 conn.close()
+
+    def _relay_stream(self, res: http.client.HTTPResponse) -> None:
+        if res.status >= 400:
+            detail = res.read().decode("utf-8", "replace")
+            payload = json.dumps(
+                {
+                    "error": {
+                        "message": upstream_error_message(detail, res.status),
+                        "code": res.status,
+                    }
+                },
+                ensure_ascii=False,
+            )
+            self.wfile.write(f"data: {payload}\n\ndata: [DONE]\n\n".encode("utf-8"))
+            self.wfile.flush()
+            return
+
+        while True:
+            chunk = res.read1(4096)
+            if not chunk:
+                break
+            self.wfile.write(chunk)
+            self.wfile.flush()
 
     def _proxy_json(self, body: dict) -> None:
         model_id = str(body.get("model") or DEFAULT_MODEL)
         conn: http.client.HTTPConnection | None = None
         try:
-            conn, res = open_completion(model_id, body)
-            payload = res.read()
+            with local_model_use(model_id):
+                conn, res = open_completion(model_id, body)
+                payload = res.read()
             self.send_response(res.status)
             self.send_header("Content-Type", res.getheader("Content-Type", "application/json"))
             self.send_header("Content-Length", str(len(payload)))
@@ -1462,10 +1644,23 @@ def cleanup() -> None:
         job_ids = list(_jobs)
     for job_id in job_ids:
         cancel_job(job_id)
-    stop_model()
+    # Un chargement peut tenir le verrou longtemps : on n'attend pas plus de
+    # quelques secondes et on tue directement llama-server si besoin.
+    if _model_lock.acquire(timeout=5):
+        try:
+            _stop_model_locked()
+        finally:
+            _model_lock.release()
+    else:
+        proc = _model_proc
+        if proc and proc.poll() is None:
+            proc.kill()
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
+    if len(argv) >= 2 and argv[1] == "--download":
+        return download_models(argv[2] if len(argv) >= 3 else "default")
+
     if not SNAP_LLAMA_BIN.exists():
         print(f"❌ llama-server Snapdragon introuvable: {SNAP_LLAMA_BIN}", file=sys.stderr)
         return 1
@@ -1485,11 +1680,16 @@ def main() -> int:
     server = ThreadingHTTPServer((HOST, PORT), RouterHandler)
     server.daemon_threads = True
 
+    if IDLE_UNLOAD > 0:
+        threading.Thread(target=idle_unload_loop, name="lueur-idle-unload", daemon=True).start()
+
     log(f"Lueur router: http://{HOST}:{PORT}")
     log(f"llama-server interne: http://{MODEL_HOST}:{MODEL_PORT}")
     configured = sum(1 for p in provider_statuses().values() if p["configured"])
     log(f"Modèles: {len(MODELS)} · fournisseurs configurés: {configured}/{len(PROVIDERS)}")
     log("Le local garde un seul modèle GGUF NPU en RAM; les modèles manquants sont téléchargés à la demande.")
+    if IDLE_UNLOAD > 0:
+        log(f"Déchargement automatique du modèle local après {IDLE_UNLOAD}s d'inactivité.")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
@@ -1501,4 +1701,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv))

@@ -11,3 +11,7 @@ dist
 
 # Wrangler local state
 .wrangler/
+
+# Python
+__pycache__/
+*.pyc

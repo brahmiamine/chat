@@ -57,7 +57,20 @@ curl -fsSL https://raw.githubusercontent.com/brahmiamine/chat/main/scripts/start
 ~/start-ai.sh            # démarrer / afficher l’URL
 ~/start-ai.sh restart    # tout redémarrer
 ~/start-ai.sh stop       # tout arrêter
+~/start-ai.sh status     # état du router, du modèle chargé, du tunnel et du superviseur
+~/start-ai.sh boot       # démarrage automatique au boot (app Termux:Boot)
 ```
+
+Le démarrage n’attend plus les téléchargements : les modèles locaux manquants sont récupérés en arrière-plan (`~/lueur-prefetch.log`) et le router télécharge à la demande celui qu’on utilise, sans conflit entre les deux. Si GitHub est injoignable, la copie locale du router est conservée. Un superviseur relance automatiquement le router et le tunnel s’ils tombent (`~/lueur-supervisor.log`).
+
+Options dans `~/.lueur.env` :
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `LUEUR_PREFETCH` | `all` | modèles pré-téléchargés : `all`, `default` ou `none` |
+| `LUEUR_IDLE_UNLOAD` | `600` | secondes d’inactivité avant de décharger le modèle local (`0` = jamais) |
+| `LUEUR_CLOUD_UNLOAD` | `0` | `1` = décharger le modèle local dès qu’un modèle cloud est utilisé |
+| `LUEUR_SUPERVISE` | `1` | `0` = pas de relance automatique |
 
 Ouvrez ensuite directement l’URL `https://…trycloudflare.com` affichée par cloudflared (ou `http://127.0.0.1:8080` sur le téléphone). La branche `dist` est reconstruite à chaque push sur `main`.
 
@@ -303,7 +316,7 @@ chmod +x ~/start-ai.sh
 ~/start-ai.sh restart
 ```
 
-Le router lit le champ OpenAI `model`. Pour un modèle local, il charge automatiquement le GGUF demandé et libère le précédent. Pour un modèle cloud, il libère la RAM du modèle local, remplace l'identifiant Lueur par l'identifiant du fournisseur et relaie la requête HTTPS/SSE avec la clé conservée dans Termux.
+Le router lit le champ OpenAI `model`. Pour un modèle local, il charge automatiquement le GGUF demandé et libère le précédent. Pour un modèle cloud, il garde le modèle local chargé (déchargé après `LUEUR_IDLE_UNLOAD` secondes d'inactivité, ou tout de suite avec `LUEUR_CLOUD_UNLOAD=1`), remplace l'identifiant Lueur par l'identifiant du fournisseur et relaie la requête HTTPS/SSE avec la clé conservée dans Termux.
 
 ## Modèles texte de test
 
