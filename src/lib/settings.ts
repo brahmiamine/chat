@@ -110,7 +110,7 @@ function migrateDefaultModel(s: Settings): Settings {
       || (LEGACY_DEFAULT_MODELS.has(s.modelId) ? DEFAULT_MODEL_ID : s.modelId);
   const models: ModelEntry[] = (s.models || [])
     .filter(m => !LEGACY_DEFAULT_MODELS.has(m.id))
-    .filter(m => !REMOVED_MODELS.has(m.id) && !m.id.startsWith('cerebras::') && m.provider !== 'cerebras')
+    .filter(m => !REMOVED_MODELS.has(m.id) && !m.id.startsWith('cerebras::') && String(m.provider || '') !== 'cerebras')
     .map((m): ModelEntry => {
       const builtin = DEFAULT_MODELS.find(x => x.id === m.id);
       // Enrich settings saved by older versions with provider metadata while
