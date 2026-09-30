@@ -1,17 +1,18 @@
 /**
  * Conversation state + generation lifecycle.
  *
- * Performance notes
- * - Streamed tokens are buffered and flushed at most once per animation frame.
- * - The in-flight text lives in a separate `live` state, so the conversation
- *   list (and the sidebar) does not re-render on every token; the final text
- *   is committed once when the stream ends.
- * - Partial answers are checkpointed to IndexedDB every ~1.5 s so a refresh
- *   mid-generation keeps what was already received.
+ * Background-generation notes
+ * - On Lueur's Termux router, llama.cpp generation is owned by the router.
+ *   Closing/suspending the browser only disconnects the viewer; it does not
+ *   cancel the model.
+ * - The assistant message stores a generationId in IndexedDB. When Lueur is
+ *   opened again it asks the router for the current job snapshot, catches up,
+ *   then re-attaches to the live SSE stream.
+ * - Explicit "Stop" still cancels the router-owned job.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AssistantMessage, AttachedFile, ChatError, Conversation, MessageStatus, Settings, UserMessage } from '../types';
-import { llmApi } from '../services/llmApi';
+import { LLMApiError, llmApi } from '../services/llmApi';
 import { demoStream } from '../services/demoProvider';
 import { conversationDb } from '../services/db';
 import { diagnoseError, type AbortReason } from '../services/errors';
@@ -33,6 +34,15 @@ interface Options {
   onConnectionError?: () => void;
 }
 
+interface ActiveRun {
+  ctrl: AbortController;
+  reason: AbortReason;
+  cid: string;
+  mid: string;
+  jobId?: string;
+  background: boolean;
+}
+
 export function useChat(settings: Settings, { onConnectionError }: Options = {}) {
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -45,7 +55,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
   settingsRef.current = settings;
   const onConnErrRef = useRef(onConnectionError);
   onConnErrRef.current = onConnectionError;
-  const run = useRef<{ ctrl: AbortController; reason: AbortReason; cid: string } | null>(null);
+  const run = useRef<ActiveRun | null>(null);
 
   /** Synchronously updates the ref and schedules the React state update. */
   const commit = useCallback((fn: (list: Conversation[]) => Conversation[]) => {
@@ -67,7 +77,18 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     let cancelled = false;
     conversationDb.all().then(list => {
       if (cancelled) return;
-      for (const c of list) for (const m of c.messages) if (m.role === 'assistant' && m.status === 'streaming') m.status = 'stopped';
+
+      // Old conversations (created before background jobs existed) cannot be
+      // resumed. New streaming messages with generationId remain streaming and
+      // are re-attached below.
+      for (const c of list) {
+        for (const m of c.messages) {
+          if (m.role === 'assistant' && m.status === 'streaming' && !m.generationId) {
+            m.status = 'stopped';
+          }
+        }
+      }
+
       convsRef.current = list;
       setConvs(list);
       let saved: string | null = null;
@@ -82,12 +103,33 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     try { localStorage.setItem(ACTIVE_KEY, activeId || ''); } catch { /* ignore */ }
   }, [activeId, loaded]);
 
+  // On actual page/tab destruction, detach the browser request only. A
+  // router-owned background job intentionally keeps running.
   useEffect(() => () => run.current?.ctrl.abort(), []);
+
+  const finalize = useCallback((
+    cid: string,
+    aid: string,
+    content: string,
+    status: MessageStatus,
+    error: ChatError | null = null,
+  ) => {
+    patchConv(cid, c => ({
+      ...c,
+      messages: c.messages.map(m => (
+        m.id === aid
+          ? { ...m, content, status, error } as AssistantMessage
+          : m
+      )),
+    }));
+    persist(cid);
+  }, [patchConv, persist]);
 
   // ---- generation ----
   const generate = useCallback(async (cid: string, overrides?: Partial<Settings>) => {
     const conv = convsRef.current.find(c => c.id === cid);
     if (!conv || run.current) return;
+
     const s = { ...settingsRef.current, ...overrides };
     const model = currentModel(s);
     const history = buildHistory(conv.messages, s);
@@ -95,11 +137,35 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
 
     const aid = uid();
     const ctrl = new AbortController();
-    const current = { ctrl, reason: null as AbortReason, cid };
+    const current: ActiveRun = {
+      ctrl,
+      reason: null,
+      cid,
+      mid: aid,
+      jobId: s.provider === 'demo' ? undefined : aid,
+      background: false,
+    };
     run.current = current;
 
-    const placeholder: AssistantMessage = { id: aid, role: 'assistant', content: '', status: 'streaming', author: model.label, createdAt: Date.now() };
-    patchConv(cid, c => ({ ...c, updatedAt: Date.now(), model: model.id, modelLabel: model.label, messages: [...c.messages, placeholder] }));
+    // Persist immediately. Even if the browser is closed a fraction of a
+    // second later, the next launch knows which router job to recover.
+    const placeholder: AssistantMessage = {
+      id: aid,
+      role: 'assistant',
+      content: '',
+      status: 'streaming',
+      author: model.label,
+      generationId: current.jobId,
+      createdAt: Date.now(),
+    };
+    patchConv(cid, c => ({
+      ...c,
+      updatedAt: Date.now(),
+      model: model.id,
+      modelLabel: model.label,
+      messages: [...c.messages, placeholder],
+    }));
+    persist(cid);
     setLive({ cid, mid: aid, content: '' });
 
     let full = '';
@@ -108,38 +174,95 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     let timer = 0;
     let lastCheckpoint = Date.now();
 
-    const withContent = (content: string, status: MessageStatus, error: ChatError | null = null) => (c: Conversation): Conversation => ({
-      ...c,
-      messages: c.messages.map(m => (m.id === aid ? { ...m, content, status, error } as AssistantMessage : m)),
-    });
+    const withContent = (content: string, status: MessageStatus, error: ChatError | null = null) =>
+      (c: Conversation): Conversation => ({
+        ...c,
+        messages: c.messages.map(m => (
+          m.id === aid
+            ? { ...m, content, status, error } as AssistantMessage
+            : m
+        )),
+      });
+
     const flush = () => {
       raf = 0;
       if (!pending) return;
       full += pending;
       pending = '';
       setLive({ cid, mid: aid, content: full });
+
       if (Date.now() - lastCheckpoint > CHECKPOINT_MS) {
         lastCheckpoint = Date.now();
         const c = convsRef.current.find(x => x.id === cid);
         if (c) persist(cid, withContent(full, 'streaming')(c));
       }
     };
+
     const arm = () => {
+      if (current.background) return;
       clearTimeout(timer);
-      timer = window.setTimeout(() => { current.reason = 'timeout'; ctrl.abort(); }, INACTIVITY_TIMEOUT_MS);
+      timer = window.setTimeout(() => {
+        current.reason = 'timeout';
+        ctrl.abort();
+      }, INACTIVITY_TIMEOUT_MS);
     };
 
     let status: MessageStatus = 'done';
     let error: ChatError | null = null;
     arm();
+
     try {
-      const stream = s.provider === 'demo'
-        ? demoStream(lastUser?.content || '', ctrl.signal)
-        : llmApi.streamChat(
-            { baseUrl: s.baseUrl, apiKey: s.apiKey },
-            { model: model.id, messages: history, temperature: s.temperature, top_p: s.topP, max_tokens: s.maxTokens },
+      let stream: AsyncGenerator<string, void, void>;
+
+      if (s.provider === 'demo') {
+        // Demo mode is browser-owned and cannot survive a closed page.
+        stream = demoStream(lastUser?.content || '', ctrl.signal);
+      } else {
+        const cfg = { baseUrl: s.baseUrl, apiKey: s.apiKey };
+        const background = await llmApi.supportsBackgroundGenerations(cfg);
+        current.background = background;
+
+        if (background && current.jobId) {
+          clearTimeout(timer);
+          stream = llmApi.streamBackgroundChat(
+            cfg,
+            {
+              model: model.id,
+              messages: history,
+              temperature: s.temperature,
+              top_p: s.topP,
+              max_tokens: s.maxTokens,
+            },
+            current.jobId,
             ctrl.signal,
           );
+        } else {
+          // External OpenAI-compatible servers keep the old browser-owned
+          // behavior. Remove generationId so a later reload will not try to
+          // resume a job that does not exist.
+          current.jobId = undefined;
+          patchConv(cid, c => ({
+            ...c,
+            messages: c.messages.map(m => (
+              m.id === aid ? { ...m, generationId: undefined } as AssistantMessage : m
+            )),
+          }));
+          persist(cid);
+
+          stream = llmApi.streamChat(
+            cfg,
+            {
+              model: model.id,
+              messages: history,
+              temperature: s.temperature,
+              top_p: s.topP,
+              max_tokens: s.maxTokens,
+            },
+            ctrl.signal,
+          );
+        }
+      }
+
       for await (const token of stream) {
         arm();
         if (!token) continue;
@@ -147,51 +270,238 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
         if (!raf) raf = requestAnimationFrame(flush);
       }
     } catch (e) {
-      if (current.reason === 'user') status = 'stopped';
-      else {
+      if (current.reason === 'user') {
+        status = 'stopped';
+      } else if (ctrl.signal.aborted && current.background) {
+        // Page destruction detaches the browser but must not overwrite the
+        // persisted "streaming" state; the job will be recovered next launch.
+        return;
+      } else {
         status = 'error';
         error = await diagnoseError(e, s.baseUrl, current.reason);
       }
+    } finally {
+      clearTimeout(timer);
+      if (raf) cancelAnimationFrame(raf);
     }
-    clearTimeout(timer);
-    if (raf) cancelAnimationFrame(raf);
+
     full += pending;
 
     if (convsRef.current.some(c => c.id === cid)) {
-      patchConv(cid, withContent(full, status, error));
-      persist(cid);
+      finalize(cid, aid, full, status, error);
     }
-    run.current = null;
+
+    if (run.current === current) run.current = null;
     setLive(null);
     if (status === 'error' && !error?.http) onConnErrRef.current?.();
-  }, [patchConv, persist]);
+  }, [finalize, patchConv, persist]);
+
+  /**
+   * Recover a router-owned job after page refresh/browser restart.
+   * First fetch a snapshot (instant catch-up), then attach to SSE if still
+   * running.
+   */
+  const resumeGeneration = useCallback(async (
+    cid: string,
+    message: AssistantMessage,
+  ) => {
+    if (!message.generationId || run.current) return;
+
+    const s = settingsRef.current;
+    if (s.provider === 'demo') {
+      finalize(cid, message.id, message.content, 'stopped');
+      return;
+    }
+
+    const cfg = { baseUrl: s.baseUrl, apiKey: s.apiKey };
+    const ctrl = new AbortController();
+    const current: ActiveRun = {
+      ctrl,
+      reason: null,
+      cid,
+      mid: message.id,
+      jobId: message.generationId,
+      background: true,
+    };
+    run.current = current;
+
+    let full = message.content || '';
+    let pending = '';
+    let raf = 0;
+    let lastCheckpoint = Date.now();
+
+    const flush = () => {
+      raf = 0;
+      if (!pending) return;
+      full += pending;
+      pending = '';
+      setLive({ cid, mid: message.id, content: full });
+
+      if (Date.now() - lastCheckpoint > CHECKPOINT_MS) {
+        lastCheckpoint = Date.now();
+        const c = convsRef.current.find(x => x.id === cid);
+        if (c) {
+          const updated: Conversation = {
+            ...c,
+            messages: c.messages.map(m => (
+              m.id === message.id
+                ? { ...m, content: full, status: 'streaming', error: null } as AssistantMessage
+                : m
+            )),
+          };
+          persist(cid, updated);
+        }
+      }
+    };
+
+    try {
+      const snapshot = await llmApi.getBackgroundGeneration(cfg, message.generationId);
+      full = snapshot.content || full;
+
+      patchConv(cid, c => ({
+        ...c,
+        messages: c.messages.map(m => (
+          m.id === message.id
+            ? { ...m, content: full, error: null } as AssistantMessage
+            : m
+        )),
+      }));
+      persist(cid);
+
+      if (snapshot.status === 'done') {
+        finalize(cid, message.id, full, 'done');
+        return;
+      }
+      if (snapshot.status === 'stopped') {
+        finalize(cid, message.id, full, 'stopped');
+        return;
+      }
+      if (snapshot.status === 'error') {
+        const diagnosed = await diagnoseError(
+          new Error(snapshot.error || 'Background generation failed'),
+          s.baseUrl,
+          null,
+        );
+        finalize(cid, message.id, full, 'error', diagnosed);
+        return;
+      }
+
+      setLive({ cid, mid: message.id, content: full });
+
+      const stream = llmApi.resumeBackgroundChat(
+        cfg,
+        message.generationId,
+        snapshot.cursor,
+        ctrl.signal,
+      );
+
+      for await (const token of stream) {
+        if (!token) continue;
+        pending += token;
+        if (!raf) raf = requestAnimationFrame(flush);
+      }
+
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      full += pending;
+      pending = '';
+      finalize(cid, message.id, full, 'done');
+    } catch (e) {
+      if (current.reason === 'user') {
+        finalize(cid, message.id, full, 'stopped');
+      } else if (ctrl.signal.aborted) {
+        // Browser/page is going away again. Keep the persisted status streaming
+        // so the next launch can reconnect to the same router job.
+        return;
+      } else if (e instanceof LLMApiError && e.status === 404) {
+        // Router restarted or the one-hour completed-job cache expired.
+        finalize(cid, message.id, full, 'stopped');
+      } else {
+        const diagnosed = await diagnoseError(e, s.baseUrl, current.reason);
+        finalize(cid, message.id, full, 'error', diagnosed);
+        if (!diagnosed?.http) onConnErrRef.current?.();
+      }
+    } finally {
+      if (raf) cancelAnimationFrame(raf);
+      if (run.current === current) run.current = null;
+      setLive(null);
+    }
+  }, [finalize, patchConv, persist]);
+
+  // After IndexedDB is loaded, recover any in-flight router job. Including
+  // convs in dependencies lets us move on if more than one stale streaming
+  // message ever exists, while run.current prevents duplicate attachments.
+  useEffect(() => {
+    if (!loaded || run.current) return;
+
+    for (const c of convsRef.current) {
+      const pending = c.messages.find(
+        (m): m is AssistantMessage =>
+          m.role === 'assistant' &&
+          m.status === 'streaming' &&
+          Boolean(m.generationId),
+      );
+      if (pending) {
+        void resumeGeneration(c.id, pending);
+        break;
+      }
+    }
+  }, [loaded, convs, resumeGeneration]);
 
   const stop = useCallback(() => {
-    if (!run.current) return;
-    run.current.reason = 'user';
-    run.current.ctrl.abort();
+    const current = run.current;
+    if (!current) return;
+
+    current.reason = 'user';
+
+    if (current.background && current.jobId) {
+      const s = settingsRef.current;
+      void llmApi.cancelBackgroundGeneration(
+        { baseUrl: s.baseUrl, apiKey: s.apiKey },
+        current.jobId,
+      ).catch(() => {});
+    }
+
+    current.ctrl.abort();
   }, []);
 
   const send = useCallback((text: string, files: AttachedFile[] = []) => {
     const content = text.trim();
     if ((!content && !files.length) || run.current) return false;
+
     const model = currentModel(settingsRef.current);
     const now = Date.now();
-    const userMsg: UserMessage = { id: uid(), role: 'user', content, files: files.length ? files : undefined, createdAt: now };
+    const userMsg: UserMessage = {
+      id: uid(),
+      role: 'user',
+      content,
+      files: files.length ? files : undefined,
+      createdAt: now,
+    };
+
     const existing = activeId ? convsRef.current.find(c => c.id === activeId) : undefined;
     const cid = existing ? existing.id : uid();
+
     if (existing) {
       patchConv(cid, c => ({ ...c, messages: [...c.messages, userMsg], updatedAt: now }));
     } else {
       const conv: Conversation = {
-        id: cid, title: makeTitle(content || files[0].name), createdAt: now, updatedAt: now,
-        model: model.id, modelLabel: model.label, messages: [userMsg],
+        id: cid,
+        title: makeTitle(content || files[0].name),
+        createdAt: now,
+        updatedAt: now,
+        model: model.id,
+        modelLabel: model.label,
+        messages: [userMsg],
       };
       commit(list => [conv, ...list]);
     }
+
     setActiveId(cid);
     persist(cid);
-    generate(cid);
+    void generate(cid);
     return true;
   }, [activeId, commit, generate, patchConv, persist]);
 
@@ -202,7 +512,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       const i = c.messages.findIndex(m => m.id === mid);
       return { ...c, messages: i >= 0 ? c.messages.slice(0, i) : c.messages };
     });
-    generate(cid, overrides);
+    void generate(cid, overrides);
   }, [generate, patchConv]);
 
   const rename = useCallback((id: string, title: string) => {
