@@ -11,17 +11,43 @@
  * - Explicit "Stop" still cancels the router-owned job.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentStep, AssistantMessage, AttachedFile, ChatCompletionParams, ChatError, Conversation, GenerationMetrics, MessageStatus, Settings, UserMessage } from '../types';
+import type { AgentStep, Artifact, ArtifactFile, AssistantMessage, AttachedFile, ChatCompletionParams, ChatError, Conversation, GenerationMetrics, MessageStatus, Settings, UserMessage } from '../types';
 import { generationMetrics, LLMApiError, llmApi, type LueurMeta } from '../services/llmApi';
 import { demoStream } from '../services/demoProvider';
 import { conversationDb } from '../services/db';
 import { diagnoseError, type AbortReason } from '../services/errors';
 import { buildHistory, makeTitle, uid } from '../lib/chat';
+import { artifactInstructions, detectArtifact, mergeArtifact, stripArtifactCode } from '../lib/artifacts';
 import { currentModel } from '../lib/settings';
 
 const INACTIVITY_TIMEOUT_MS = 90_000;
 const CHECKPOINT_MS = 1500;
 const ACTIVE_KEY = 'lueur.active';
+/** An artifact stays in the model's instructions while it was touched in the last N messages. */
+const ARTIFACT_CONTEXT_MESSAGES = 6;
+const CONTINUE_PROMPT = 'Ta réponse précédente a été coupée. Continue exactement à partir du dernier caractère, '
+  + 'sans rien répéter ni ajouter d’introduction. Si tu étais dans un bloc de code, continue le code sans rouvrir de bloc.';
+
+/** The artifact being worked on: the most recently updated one, if recent enough. */
+function currentArtifact(conv: Conversation): Artifact | null {
+  const latest = [...(conv.artifacts || [])].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (!latest) return null;
+  const newer = conv.messages.filter(m => m.createdAt > latest.updatedAt).length;
+  return newer <= ARTIFACT_CONTEXT_MESSAGES ? latest : null;
+}
+
+/** Settings + history for a request, with the current artifact in the instructions. */
+function withArtifact(conv: Conversation, s: Settings, local: boolean) {
+  const artifact = currentArtifact(conv);
+  if (!artifact) return { settings: s, assistantText: undefined };
+  const maxChars = local ? Math.max(2000, (s.contextSize - s.maxTokens) * 3.2 * 0.5) : 60_000;
+  const settings = { ...s, systemPrompt: [s.systemPrompt.trim(), artifactInstructions(artifact, maxChars)].filter(Boolean).join('\n\n') };
+  const version = artifact.versions.length;
+  // The code of previous versions is not resent: the current one is in the instructions.
+  const assistantText = (m: AssistantMessage, text: string) =>
+    (m.artifact?.id === artifact.id ? stripArtifactCode(text, artifact.title, version) : text);
+  return { settings, assistantText };
+}
 
 function estimateOutputTokens(text: string): number {
   const chars = Array.from(text || '').length;
@@ -76,11 +102,19 @@ interface ActiveRun {
   background: boolean;
 }
 
+export interface ArtifactOpenRequest {
+  cid: string;
+  id: string;
+  /** Changes on every request, so the same artifact can be re-opened. */
+  seq: number;
+}
+
 export function useChat(settings: Settings, { onConnectionError }: Options = {}) {
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [live, setLive] = useState<LiveStream | null>(null);
+  const [artifactOpen, setArtifactOpen] = useState<ArtifactOpenRequest | null>(null);
 
   // Refs mirror the latest values for async code (streams outlive renders).
   const convsRef = useRef(convs);
@@ -148,16 +182,59 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     error: ChatError | null = null,
     metrics?: GenerationMetrics,
   ) => {
+    // Something was built (page, component, diagram…): new artifact or new version.
+    const detected = status !== 'error' ? detectArtifact(content) : null;
+    let opened: { id: string } | null = null;
+    patchConv(cid, c => {
+      let artifacts = c.artifacts;
+      let ref: AssistantMessage['artifact'];
+      if (detected) {
+        const merged = mergeArtifact(c.artifacts, detected, aid);
+        artifacts = merged.artifacts;
+        ref = merged.ref;
+        opened = { id: merged.ref.id };
+      }
+      return {
+        ...c,
+        artifacts,
+        messages: c.messages.map(m => (
+          m.id === aid
+            ? {
+              ...m, content, status, error, baseContent: undefined,
+              metrics: metrics || (m as AssistantMessage).metrics,
+              artifact: ref || (m as AssistantMessage).artifact,
+            } as AssistantMessage
+            : m
+        )),
+      };
+    });
+    persist(cid);
+    if (opened) setArtifactOpen({ cid, id: (opened as { id: string }).id, seq: Date.now() });
+  }, [patchConv, persist]);
+
+  const addArtifactVersion = useCallback((cid: string, artifactId: string, files: ArtifactFile[], source: 'edit' | 'restore') => {
+    const now = Date.now();
     patchConv(cid, c => ({
       ...c,
-      messages: c.messages.map(m => (
-        m.id === aid
-          ? { ...m, content, status, error, metrics: metrics || (m as AssistantMessage).metrics } as AssistantMessage
-          : m
-      )),
+      updatedAt: now,
+      artifacts: (c.artifacts || []).map(a => (a.id === artifactId
+        ? { ...a, updatedAt: now, versions: [...a.versions, { id: uid(), files, source, createdAt: now }] }
+        : a)),
     }));
     persist(cid);
   }, [patchConv, persist]);
+
+  /** Manual edit in the artifact panel → new version. */
+  const saveArtifactEdit = useCallback((cid: string, artifactId: string, files: ArtifactFile[]) => {
+    addArtifactVersion(cid, artifactId, files, 'edit');
+  }, [addArtifactVersion]);
+
+  /** Undo: an older version becomes the newest one (history is kept). */
+  const restoreArtifactVersion = useCallback((cid: string, artifactId: string, index: number) => {
+    const artifact = convsRef.current.find(c => c.id === cid)?.artifacts?.find(a => a.id === artifactId);
+    const version = artifact?.versions[index];
+    if (version) addArtifactVersion(cid, artifactId, version.files.map(f => ({ ...f })), 'restore');
+  }, [addArtifactVersion]);
 
   /** Agent steps are rare events: store them on the message right away. */
   const setSteps = useCallback((cid: string, mid: string, steps: AgentStep[]) => {
@@ -169,25 +246,32 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
   }, [patchConv, persist]);
 
   // ---- generation ----
-  const generate = useCallback(async (cid: string, overrides?: Partial<Settings>) => {
+  const generate = useCallback(async (cid: string, overrides?: Partial<Settings>, continueOf?: string) => {
     const conv = convsRef.current.find(c => c.id === cid);
     if (!conv || run.current) return;
 
-    const s = { ...settingsRef.current, ...overrides };
-    const model = currentModel(s);
+    const model = currentModel({ ...settingsRef.current, ...overrides });
+    const { settings: s, assistantText } = withArtifact(conv, { ...settingsRef.current, ...overrides }, model.provider === 'local');
+    // "Continue": the continuation is appended to an existing (truncated) answer.
+    const continued = continueOf
+      ? conv.messages.find((m): m is AssistantMessage => m.id === continueOf && m.role === 'assistant')
+      : undefined;
+    if (continueOf && !continued) return;
+    const base = continued?.content || '';
+    const extra = continued ? [{ role: 'user' as const, content: CONTINUE_PROMPT }] : [];
     const generationStartedAt = Date.now();
     let firstTokenAt: number | undefined;
     let metrics: GenerationMetrics | undefined;
     const lastUser = [...conv.messages].reverse().find((m): m is UserMessage => m.role === 'user');
 
-    const aid = uid();
+    const aid = continued ? continued.id : uid();
     const ctrl = new AbortController();
     const current: ActiveRun = {
       ctrl,
       reason: null,
       cid,
       mid: aid,
-      jobId: s.provider === 'demo' ? undefined : aid,
+      jobId: s.provider === 'demo' ? undefined : (continued ? uid() : aid),
       background: false,
     };
     run.current = current;
@@ -210,15 +294,24 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       },
       createdAt: generationStartedAt,
     };
+    // History is built before the placeholder/continued message turns "streaming".
+    const history = (full: boolean) => [
+      ...buildHistory(conv.messages, s, full ? { full: true, splitFiles: true, assistantText } : { assistantText }),
+      ...extra,
+    ];
     patchConv(cid, c => ({
       ...c,
       updatedAt: Date.now(),
       model: model.id,
       modelLabel: model.label,
-      messages: [...c.messages, placeholder],
+      messages: continued
+        ? c.messages.map(m => (m.id === aid
+          ? { ...m, status: 'streaming', error: null, generationId: current.jobId, baseContent: base } as AssistantMessage
+          : m))
+        : [...c.messages, placeholder],
     }));
     persist(cid);
-    setLive({ cid, mid: aid, content: '' });
+    setLive({ cid, mid: aid, content: base });
 
     let full = '';
     let pending = '';
@@ -241,21 +334,23 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
       if (!pending) return;
       full += pending;
       pending = '';
-      setLive({ cid, mid: aid, content: full });
+      setLive({ cid, mid: aid, content: base + full });
 
       if (Date.now() - lastCheckpoint > CHECKPOINT_MS) {
         lastCheckpoint = Date.now();
         const c = convsRef.current.find(x => x.id === cid);
-        if (c) persist(cid, withContent(full, 'streaming')(c));
+        if (c) persist(cid, withContent(base + full, 'streaming')(c));
       }
     };
 
+    let finishReason: string | undefined;
     const onMeta = (meta: LueurMeta) => {
+      if (meta.finish_reason) finishReason = meta.finish_reason;
       if (Array.isArray(meta.steps)) setSteps(cid, aid, meta.steps);
       if (typeof meta.replace === 'string') {
         full = meta.replace;
         pending = '';
-        setLive({ cid, mid: aid, content: full });
+        setLive({ cid, mid: aid, content: base + full });
       }
     };
 
@@ -278,7 +373,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
 
       if (s.provider === 'demo') {
         // Demo mode is browser-owned and cannot survive a closed page.
-        stream = demoStream(lastUser?.content || '', ctrl.signal);
+        stream = demoStream(continued ? '' : lastUser?.content || '', ctrl.signal);
       } else {
         const cfg = { baseUrl: s.baseUrl, apiKey: s.apiKey };
         const caps = await llmApi.getRouterCapabilities(cfg);
@@ -291,9 +386,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
             model: model.id,
             // With the agent router, send everything: it summarizes, retrieves
             // memories/documents and fits the model's real context itself.
-            messages: caps.agent
-              ? buildHistory(conv.messages, s, { full: true, splitFiles: true })
-              : buildHistory(conv.messages, s),
+            messages: history(caps.agent),
             temperature: s.temperature,
             top_p: s.topP,
             max_tokens: s.maxTokens,
@@ -301,12 +394,12 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
           if (caps.agent) {
             params._lueur_context = true;
             params._lueur_conversation_id = cid;
-            params._lueur_agent = s.agentEnabled;
-            params._lueur_memory = s.memoryEnabled && (model.provider === 'local' || s.memoryCloud);
+            // A continuation needs neither tools nor memory extraction.
+            params._lueur_agent = s.agentEnabled && !continued;
+            params._lueur_memory = s.memoryEnabled && !continued && (model.provider === 'local' || s.memoryCloud);
           }
           stream = llmApi.streamBackgroundChat(cfg, params, current.jobId, ctrl.signal, onMeta);
         } else {
-          const history = buildHistory(conv.messages, s);
           // External OpenAI-compatible servers keep the old browser-owned
           // behavior. Remove generationId so a later reload will not try to
           // resume a job that does not exist.
@@ -323,12 +416,13 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
             cfg,
             {
               model: model.id,
-              messages: history,
+              messages: history(false),
               temperature: s.temperature,
               top_p: s.topP,
               max_tokens: s.maxTokens,
             },
             ctrl.signal,
+            onMeta,
           );
         }
       }
@@ -375,10 +469,10 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
         // Metrics are best-effort and must never turn a valid answer into an error.
       }
     }
-    metrics ||= fallbackMetrics(model, generationStartedAt, firstTokenAt, Date.now(), full);
+    metrics ||= { ...fallbackMetrics(model, generationStartedAt, firstTokenAt, Date.now(), full), finishReason };
 
     if (convsRef.current.some(c => c.id === cid)) {
-      finalize(cid, aid, full, status, error, metrics);
+      finalize(cid, aid, base + full, status, error, metrics);
     }
 
     if (run.current === current) run.current = null;
@@ -415,6 +509,8 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     };
     run.current = current;
 
+    // For a "Continue" job, the router only holds the continuation.
+    const base = message.baseContent || '';
     let full = message.content || '';
     let metrics = message.metrics;
     let pending = '';
@@ -424,7 +520,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     const onMeta = (meta: LueurMeta) => {
       if (Array.isArray(meta.steps)) setSteps(cid, message.id, meta.steps);
       if (typeof meta.replace === 'string') {
-        full = meta.replace;
+        full = base + meta.replace;
         pending = '';
         setLive({ cid, mid: message.id, content: full });
       }
@@ -456,7 +552,7 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
 
     try {
       const snapshot = await llmApi.getBackgroundGeneration(cfg, message.generationId);
-      full = snapshot.content || full;
+      full = base + (snapshot.content || '') || full;
       metrics = generationMetrics(snapshot) || metrics;
 
       patchConv(cid, c => ({
@@ -622,6 +718,12 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     void generate(cid, overrides);
   }, [generate, patchConv]);
 
+  /** Appends to a truncated answer (max tokens reached or stopped). */
+  const continueAnswer = useCallback((cid: string, mid: string) => {
+    if (run.current) return;
+    void generate(cid, undefined, mid);
+  }, [generate]);
+
   const rename = useCallback((id: string, title: string) => {
     const t = title.trim();
     if (!t) return;
@@ -658,6 +760,10 @@ export function useChat(settings: Settings, { onConnectionError }: Options = {})
     send,
     stop,
     regenerate,
+    continueAnswer,
+    artifactOpen,
+    saveArtifactEdit,
+    restoreArtifactVersion,
     rename,
     remove,
     clearAll,

@@ -13,6 +13,7 @@ import { SearchDialog } from './components/search/SearchDialog';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { StatisticsModal } from './components/statistics/StatisticsModal';
 import { PreviewProvider } from './components/ui/Lightbox';
+import { ArtifactPanel } from './components/artifact/ArtifactPanel';
 
 const COLLAPSED_KEY = 'lueur.collapsed';
 
@@ -30,6 +31,8 @@ export default function App() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const view = useRef<ChatViewHandle>(null);
+  // Artifact shown in the side panel (desktop) / full screen (mobile).
+  const [artifact, setArtifact] = useState<{ cid: string; id: string } | null>(null);
 
   const collapse = useCallback((v: boolean) => {
     setCollapsed(v);
@@ -82,12 +85,28 @@ export default function App() {
     regenerate(cid, mid, { provider: 'demo' });
   }, [update, regenerate]);
 
+  // A new artifact (or version) was just built in the open conversation:
+  // show it right away on wide screens; on mobile the chip in the answer opens it.
+  const { artifactOpen } = chat;
+  useEffect(() => {
+    if (artifactOpen && artifactOpen.cid === chat.activeId && !isMobile) setArtifact({ cid: artifactOpen.cid, id: artifactOpen.id });
+  }, [artifactOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openArtifact = useCallback((cid: string, id: string) => setArtifact({ cid, id }), []);
+  const panelConv = artifact && artifact.cid === chat.activeId ? chat.active : null;
+  const { send } = chat;
+  const fixFromPanel = useCallback((prompt: string) => {
+    if (chat.generating) return;
+    send(prompt, []);
+    if (isMobile) setArtifact(null);
+  }, [send, chat.generating, isMobile]);
+
   // Focus the composer on first load (desktop).
   useEffect(() => { focusComposer(); }, [focusComposer]);
 
   // Global shortcuts.
-  const state = useRef({ searchOpen, statsOpen, settingsTab, drawer, generating: chat.generating });
-  state.current = { searchOpen, statsOpen, settingsTab, drawer, generating: chat.generating };
+  const state = useRef({ searchOpen, statsOpen, settingsTab, drawer, artifact: !!artifact, generating: chat.generating });
+  state.current = { searchOpen, statsOpen, settingsTab, drawer, artifact: !!artifact, generating: chat.generating };
   const { stop } = chat;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -101,6 +120,7 @@ export default function App() {
         else if (s.statsOpen) setStatsOpen(false);
         else if (s.settingsTab) setSettingsTab(null);
         else if (s.drawer) setDrawer(false);
+        else if (s.artifact) setArtifact(null);
         else if (s.generating) stop();
       }
     };
@@ -156,8 +176,23 @@ export default function App() {
             onRegenerate={chat.regenerate}
             onUseDemo={retryWithDemo}
             onOpenConnection={() => openSettings('connection')}
+            onContinue={chat.continueAnswer}
+            onOpenArtifact={openArtifact}
           />
         </main>
+
+        {panelConv && artifact && (
+          <ArtifactPanel
+            conversation={panelConv}
+            artifactId={artifact.id}
+            isMobile={isMobile}
+            onClose={() => setArtifact(null)}
+            onSelect={id => setArtifact({ cid: artifact.cid, id })}
+            onSaveEdit={(id, files) => chat.saveArtifactEdit(artifact.cid, id, files)}
+            onRestore={(id, index) => chat.restoreArtifactVersion(artifact.cid, id, index)}
+            onFix={fixFromPanel}
+          />
+        )}
 
         {searchOpen && <SearchDialog conversations={chat.conversations} onOpen={openConversation} onClose={() => setSearchOpen(false)} />}
         {statsOpen && <StatisticsModal conversations={chat.conversations} onClose={() => setStatsOpen(false)} />}

@@ -68,6 +68,8 @@ export interface LueurMeta {
   steps?: AgentStep[];
   /** The router rewrote the answer (e.g. removed a textual tool call). */
   replace?: string;
+  /** OpenAI finish_reason seen in the stream ("length" = cut by max tokens). */
+  finish_reason?: string;
 }
 
 export type MetaHandler = (meta: LueurMeta) => void;
@@ -192,6 +194,9 @@ async function* parseSse(
 
         if (chunk.lueur && onMeta) onMeta(chunk.lueur as LueurMeta);
 
+        const finish = chunk.choices?.[0]?.finish_reason;
+        if (finish && onMeta) onMeta({ finish_reason: String(finish) });
+
         const delta = chunk.choices?.[0]?.delta;
         if (delta?.content) yield delta.content as string;
         else if (delta?.reasoning_content) yield '';
@@ -281,6 +286,7 @@ export async function* streamChat(
   cfg: ProviderConfig,
   params: ChatCompletionParams,
   signal: AbortSignal,
+  onMeta?: MetaHandler,
 ): AsyncGenerator<string, void, void> {
   const res = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/v1/chat/completions`, {
     method: 'POST',
@@ -289,7 +295,7 @@ export async function* streamChat(
     signal,
   });
   if (!res.ok) throw new LLMApiError(res.status, await readErrorMessage(res));
-  yield* parseSse(res, signal);
+  yield* parseSse(res, signal, false, onMeta);
 }
 
 /**

@@ -89,6 +89,34 @@ export interface AgentStep {
   items?: string[];
 }
 
+// ---------- Artifacts (things the assistant builds) ----------
+
+export type ArtifactKind = 'html' | 'svg' | 'mermaid' | 'react' | 'markdown' | 'json' | 'csv' | 'javascript' | 'code';
+
+export interface ArtifactFile {
+  name: string;
+  lang: string;
+  code: string;
+}
+
+export interface ArtifactVersion {
+  id: string;
+  files: ArtifactFile[];
+  /** Assistant message that produced this version (absent for manual edits). */
+  messageId?: string;
+  source: 'assistant' | 'edit' | 'restore';
+  createdAt: number;
+}
+
+export interface Artifact {
+  id: string;
+  title: string;
+  kind: ArtifactKind;
+  versions: ArtifactVersion[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AssistantMessage {
   id: string;
   role: 'assistant';
@@ -105,6 +133,13 @@ export interface AssistantMessage {
   metrics?: GenerationMetrics;
   /** Agent steps reported by the router (tools, memory, context). */
   steps?: AgentStep[];
+  /** Artifact version this answer created. */
+  artifact?: { id: string; version: number };
+  /**
+   * Text already present before a "Continue" generation: the router job only
+   * holds the continuation, the message shows baseContent + job content.
+   */
+  baseContent?: string;
   error?: ChatError | null;
   createdAt: number;
 }
@@ -121,6 +156,8 @@ export interface Conversation {
   /** Friendly model name, e.g. "Qwen3.5 4B Vision". */
   modelLabel: string;
   messages: Message[];
+  /** Versioned artifacts built in this conversation. */
+  artifacts?: Artifact[];
 }
 
 // ---------- Provider / API (OpenAI-compatible) ----------

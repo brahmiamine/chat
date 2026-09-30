@@ -2869,8 +2869,25 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         self._serve_static(path)
 
+    def _reject_forged_post(self) -> bool:
+        """Bloque les POST qu'une page générée (aperçu HTML en iframe sandbox)
+        pourrait envoyer sans déclencher CORS : `Origin: null` ou un
+        Content-Type « simple » (text/plain, formulaire). Un vrai client
+        envoie du JSON, ce qui impose au navigateur un contrôle CORS préalable."""
+        origin = self.headers.get("Origin")
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if origin == "null":
+            self._json(403, {"error": {"message": "Origine refusée"}})
+            return True
+        if ctype != "application/json":
+            self._json(415, {"error": {"message": "Content-Type application/json requis"}})
+            return True
+        return False
+
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if self._reject_forged_post():
+            return
 
         if path == "/models/load":
             try:

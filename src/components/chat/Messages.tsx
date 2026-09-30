@@ -1,8 +1,10 @@
-import { lazy, memo, Suspense } from 'react';
+import { lazy, memo, Suspense, useMemo } from 'react';
 import type { AgentStep, AssistantMessage as AssistantMsg, GenerationMetrics, UserMessage as UserMsg } from '../../types';
 import { splitThink } from '../../lib/chat';
 import { useCopy } from '../../hooks/useCopy';
-import { AlertIcon, BulbIcon, CheckIcon, CopyIcon, FileTextIcon, RefreshIcon, SearchIcon, StarIcon, StopIcon } from '../ui/Icons';
+import { AlertIcon, BulbIcon, CheckIcon, CodeIcon, CopyIcon, FileTextIcon, RefreshIcon, SearchIcon, StarIcon, StopIcon } from '../ui/Icons';
+import { extractFences } from '../../lib/artifacts';
+import { MessageCode } from '../artifact/context';
 import { Tooltip } from '../ui/Tooltip';
 import { AttachmentList } from './Attachments';
 
@@ -125,10 +127,18 @@ interface AssistantProps {
   onRegenerate: (mid: string) => void;
   onUseDemo: (mid: string) => void;
   onOpenConnection: () => void;
+  /** Continue a truncated answer (only offered on the last answer). */
+  onContinue?: (mid: string) => void;
+  onOpenArtifact?: (artifactId: string) => void;
+  /** Sends a follow-up message (used by "Fix these errors"). */
+  onFix?: (prompt: string) => void;
+  /** Title of the artifact this answer created, for its chip. */
+  artifactTitle?: string;
 }
 
 export const AssistantMessage = memo(function AssistantMessage({
   message, liveContent, fallbackAuthor, isLast, canRegenerate, onRegenerate, onUseDemo, onOpenConnection,
+  onContinue, onOpenArtifact, onFix, artifactTitle,
 }: AssistantProps) {
   const { copied, copy } = useCopy();
   const streaming = message.status === 'streaming';
@@ -137,6 +147,9 @@ export const AssistantMessage = memo(function AssistantMessage({
   const hasText = !!text.trim();
   const err = message.status === 'error' ? message.error : null;
   const showActions = !streaming && message.status !== 'error' && hasText;
+  // Cut by max tokens, or stopped with a partial answer.
+  const truncated = message.metrics?.finishReason === 'length' || (stopped && hasText);
+  const codeContext = useMemo(() => ({ fences: extractFences(text), onFix }), [text, onFix]);
 
   return (
     <div className={`msg msg-assistant${isLast ? ' last' : ''}${streaming ? ' streaming' : ''}`}>
@@ -147,8 +160,18 @@ export const AssistantMessage = memo(function AssistantMessage({
       <AgentSteps steps={message.steps} />
       {hasText && (
         <div className="msg-body">
-          <Suspense fallback={<PlainText text={text} />}><Markdown text={text} /></Suspense>
+          <MessageCode.Provider value={codeContext}>
+            <Suspense fallback={<PlainText text={text} />}><Markdown text={text} /></Suspense>
+          </MessageCode.Provider>
         </div>
+      )}
+      {message.artifact && onOpenArtifact && !streaming && (
+        <button className="artifact-chip" onClick={() => onOpenArtifact(message.artifact!.id)}>
+          <span className="ico"><CodeIcon size={15} /></span>
+          <span className="t">{artifactTitle || 'Artefact'}</span>
+          <span className="v">v{message.artifact.version}</span>
+          <span className="open">Ouvrir</span>
+        </button>
       )}
       {streaming && (thinking || !hasText) && <TypingDots label={thinking ? 'Réflexion…' : undefined} />}
       {stopped && (
@@ -181,6 +204,9 @@ export const AssistantMessage = memo(function AssistantMessage({
               {copied ? <CheckIcon /> : <CopyIcon />}
             </button>
           </Tooltip>
+          {canRegenerate && truncated && onContinue && (
+            <button className="continue-btn" onClick={() => onContinue(message.id)}>➕ Continuer</button>
+          )}
           {canRegenerate && (
             <Tooltip label="Régénérer">
               <button className="act-btn icon-btn ghost" aria-label="Régénérer" onClick={() => onRegenerate(message.id)}>

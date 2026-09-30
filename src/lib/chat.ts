@@ -1,5 +1,5 @@
 /** Pure helpers for conversations: titles, reasoning tags, history building. */
-import type { ApiChatContentPart, ApiChatMessage, Message, Settings, UserMessage } from '../types';
+import type { ApiChatContentPart, ApiChatMessage, AssistantMessage, Message, Settings, UserMessage } from '../types';
 
 export const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
 
@@ -48,6 +48,8 @@ export interface HistoryOptions {
   full?: boolean;
   /** One text part per attached file, so the router can index long ones. */
   splitFiles?: boolean;
+  /** Rewrites an answer before sending it (e.g. drops code the instructions already carry). */
+  assistantText?: (message: AssistantMessage, text: string) => string;
 }
 
 function userWireContent(
@@ -157,7 +159,8 @@ export function buildHistory(msgs: Message[], s: Settings, opts: HistoryOptions 
       continue;
     }
 
-    const content = splitThink(m.content).text;
+    const visible = splitThink(m.content).text;
+    const content = opts.assistantText ? opts.assistantText(m, visible) : visible;
     if (content.length > budget) {
       if (out.length) break;
       out.unshift({ role: m.role, content: fitContent(content, Math.max(800, budget)) });

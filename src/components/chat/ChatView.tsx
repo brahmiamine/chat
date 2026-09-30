@@ -18,6 +18,8 @@ interface Props {
   onRegenerate: (cid: string, mid: string) => void;
   onUseDemo: (cid: string, mid: string) => void;
   onOpenConnection: () => void;
+  onContinue: (cid: string, mid: string) => void;
+  onOpenArtifact: (cid: string, artifactId: string) => void;
 }
 
 export type ChatViewHandle = Omit<ComposerHandle, 'addFiles'>;
@@ -25,7 +27,7 @@ export type ChatViewHandle = Omit<ComposerHandle, 'addFiles'>;
 const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types || [])].includes('Files');
 
 export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
-  { conversation, live, generatingHere, busy, isMobile, onSend, onStop, onRegenerate, onUseDemo, onOpenConnection }, ref,
+  { conversation, live, generatingHere, busy, isMobile, onSend, onStop, onRegenerate, onUseDemo, onOpenConnection, onContinue, onOpenArtifact }, ref,
 ) {
   const composer = useRef<ComposerHandle>(null);
   useImperativeHandle(ref, () => ({
@@ -42,6 +44,10 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
   const cid = conversation?.id;
   const regen = useCallback((mid: string) => { if (cid) onRegenerate(cid, mid); }, [cid, onRegenerate]);
   const demoRetry = useCallback((mid: string) => { if (cid) onUseDemo(cid, mid); }, [cid, onUseDemo]);
+  const continueAnswer = useCallback((mid: string) => { if (cid) onContinue(cid, mid); }, [cid, onContinue]);
+  const openArtifact = useCallback((id: string) => { if (cid) onOpenArtifact(cid, id); }, [cid, onOpenArtifact]);
+  const fix = useCallback((prompt: string) => { if (!busy) onSend(prompt, []); }, [busy, onSend]);
+  const artifactTitles = new Map((conversation?.artifacts || []).map(a => [a.id, a.title]));
 
   const { pin } = scroll;
   const send = useCallback((text: string, files: AttachedFile[]) => {
@@ -110,6 +116,10 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
                   onRegenerate={regen}
                   onUseDemo={demoRetry}
                   onOpenConnection={onOpenConnection}
+                  onContinue={continueAnswer}
+                  onOpenArtifact={openArtifact}
+                  onFix={fix}
+                  artifactTitle={m.artifact ? artifactTitles.get(m.artifact.id) : undefined}
                 />
               ),
             )}

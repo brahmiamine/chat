@@ -333,6 +333,16 @@ Le router Termux fait tourner un agent **à l'intérieur des générations en ar
 
 La mémoire est envoyée aux modèles cloud seulement si « Mémoire avec les modèles cloud » est activée. Via le Worker Cloudflare, les jobs sont transmis au router du téléphone quand `LUEUR_LOCAL_URL` est joignable (pour les modèles cloud, le router doit avoir la clé du fournisseur dans `~/.lueur.env`).
 
+## Aperçus et artefacts
+
+- **Aperçu** sur les blocs HTML, SVG, Mermaid, React (JSX/TSX), JSON (arbre), CSV (tableau) et Markdown ; **▶ Exécuter** sur le JavaScript. Une page HTML est combinée avec les blocs CSS/JS de la même réponse. Chaque bloc de code se télécharge.
+- **Artefacts** : quand une réponse *construit* quelque chose (page complète, composant React, SVG, diagramme), il s'ouvre dans un panneau (côte à côte sur ordinateur, plein écran sur mobile) avec Aperçu (largeurs Mobile/Tablette/Bureau), Code, **Modifications** (diff entre versions) et une console.
+- **Versions** : chaque modification (demandée au modèle, faite à la main dans l'onglet Code ou restaurée) crée une nouvelle version ; export ZIP pour un projet de plusieurs fichiers.
+- **Modifications conversationnelles** : l'artefact courant est envoyé dans les instructions (« mets le bouton en bleu » modifie la page existante) et l'ancien code n'est pas renvoyé dans l'historique, pour tenir dans 4096 tokens.
+- **Corriger** : les erreurs de la console sont renvoyées au modèle en un clic. **Continuer** complète une réponse coupée (limite de tokens ou arrêt).
+
+Sécurité : l'aperçu tourne dans une iframe `sandbox` **sans** `allow-same-origin` (pas d'accès au stockage de l'app ni à la clé API) avec une CSP injectée qui interdit toute requête réseau (`connect-src 'none'`) ; seuls quelques CDN publics sont autorisés pour les scripts (Mermaid, React, Tailwind…). Le router refuse les POST qui ne sont pas en `application/json` ou qui viennent d'une origine `null`, pour qu'une page générée ne puisse pas le piloter.
+
 ## Modèles texte de test
 
 Les modèles texte supplémentaires sont chargés à la demande par le router :

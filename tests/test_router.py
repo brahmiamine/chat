@@ -151,5 +151,43 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(len(self.calls), count)
 
 
+class ForgedRequestTests(unittest.TestCase):
+    """A generated page in the sandboxed preview must not be able to drive the router."""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), router.RouterHandler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.port = cls.server.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def post(self, headers):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("POST", "/lueur/memory/clear", body=b"{}", headers=headers)
+        res = conn.getresponse()
+        res.read()
+        conn.close()
+        return res.status
+
+    def test_rejects_simple_content_types(self):
+        router.memory_add("Souvenir à protéger")
+        self.assertEqual(self.post({"Content-Type": "text/plain"}), 415)
+        self.assertEqual(self.post({}), 415)
+        self.assertEqual(router.memory_count(), 1)
+
+    def test_rejects_opaque_origin(self):
+        self.assertEqual(self.post({"Content-Type": "application/json", "Origin": "null"}), 403)
+
+    def test_accepts_json(self):
+        self.assertEqual(self.post({"Content-Type": "application/json"}), 200)
+
+
 if __name__ == "__main__":
     unittest.main()
