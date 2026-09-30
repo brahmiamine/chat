@@ -2,8 +2,9 @@
 # Lueur + router Python Android + Snapdragon NPU local models + ngrok via Debian proot
 #
 # Cette version utilise ngrok dans Debian/proot pour exposer Lueur en HTTPS.
-# Qwen2.5 7B Q4_0 et Qwen3 8B Q4_0 tournent localement sur Snapdragon Hexagon HTP0.
+# Six modèles Q4_0 peuvent tourner localement sur Snapdragon Hexagon HTP0.
 # Un seul modèle local est chargé à la fois, sans clé API locale.
+# Les modèles manquants sont téléchargés automatiquement au premier usage.
 #
 # Usage :
 #   ~/start-ai.sh
@@ -18,9 +19,7 @@ THREADS="${LUEUR_THREADS:-6}"
 UI_DIR="$HOME/lueur-ui"
 LLAMA_DIR="$HOME/llama.cpp"
 SNAP_LLAMA_DIR="${LUEUR_SNAP_LLAMA_DIR:-$HOME/llama-snapdragon}"
-QWEN25_MODEL_PATH="${LUEUR_QWEN25_MODEL_PATH:-$HOME/models/Qwen2.5-7B-Instruct-Q4_0.gguf}"
-QWEN3_MODEL_PATH="${LUEUR_QWEN3_MODEL_PATH:-$HOME/models/Qwen3-8B-Q4_0.gguf}"
-QWEN3_MODEL_URL="${LUEUR_QWEN3_MODEL_URL:-https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_0.gguf}"
+MODEL_DIR="${LUEUR_MODEL_DIR:-$HOME/models}"
 DEFAULT_LOCAL_MODEL_ID="${LUEUR_DEFAULT_MODEL:-local::qwen2.5-7b-instruct-q4_0}"
 ROUTER_SCRIPT="$HOME/lueur-router.py"
 
@@ -160,54 +159,8 @@ if [ ! -x "$SNAP_LLAMA_DIR/bin/llama-server" ]; then
   exit 1
 fi
 
-mkdir -p "$HOME/models"
-
-if [ ! -r "$QWEN25_MODEL_PATH" ]; then
-  echo "❌ Qwen2.5 7B introuvable : $QWEN25_MODEL_PATH"
-  exit 1
-fi
-
-if [ ! -r "$QWEN3_MODEL_PATH" ]; then
-  echo "⬇️  Téléchargement de Qwen3 8B Q4_0 (~4.8 Go)..."
-  QWEN3_TMP="$QWEN3_MODEL_PATH.part"
-  QWEN3_DOWNLOAD_OK=0
-
-  # Les gros téléchargements Hugging Face peuvent être interrompus par Android
-  # ou par le réseau. On reprend toujours le même .part au lieu de recommencer.
-  for attempt in $(seq 1 20); do
-    if [ -f "$QWEN3_TMP" ]; then
-      CURRENT_SIZE="$(du -h "$QWEN3_TMP" 2>/dev/null | cut -f1)"
-      echo "↩️  Reprise tentative $attempt/20 depuis ${CURRENT_SIZE:-0}"
-    else
-      echo "⬇️  Tentative $attempt/20"
-    fi
-
-    if curl -L --fail \
-        --connect-timeout 30 \
-        --retry 5 \
-        --retry-delay 5 \
-        --retry-all-errors \
-        -C - \
-        -o "$QWEN3_TMP" \
-        "$QWEN3_MODEL_URL"; then
-      QWEN3_DOWNLOAD_OK=1
-      break
-    fi
-
-    echo "⚠️  Connexion interrompue, nouvelle reprise dans 5 secondes..."
-    sleep 5
-  done
-
-  if [ "$QWEN3_DOWNLOAD_OK" != "1" ]; then
-    echo "❌ Téléchargement de Qwen3 8B interrompu après 20 tentatives"
-    echo "   Aucun octet n’est perdu : $QWEN3_TMP"
-    echo "   Relance simplement ~/start-ai.sh restart pour continuer."
-    exit 1
-  fi
-
-  mv "$QWEN3_TMP" "$QWEN3_MODEL_PATH"
-  echo "✅ Qwen3 8B Q4_0 téléchargé"
-fi
+mkdir -p "$MODEL_DIR"
+echo "📦 Modèles locaux : téléchargement à la demande dans $MODEL_DIR"
 
 # --- Bibliothèques Qualcomm requises par le build Snapdragon sous Termux ---
 mkdir -p "$SNAP_LLAMA_DIR/lib"
@@ -272,9 +225,9 @@ else
     LUEUR_UI_DIR="$UI_DIR" \
     LUEUR_LLAMA_DIR="$LLAMA_DIR" \
     LUEUR_SNAP_LLAMA_DIR="$SNAP_LLAMA_DIR" \
-    LUEUR_QWEN25_MODEL_PATH="$QWEN25_MODEL_PATH" \
-    LUEUR_QWEN3_MODEL_PATH="$QWEN3_MODEL_PATH" \
+    LUEUR_MODEL_DIR="$MODEL_DIR" \
     LUEUR_MODEL_LOG="$MODEL_LOG" \
+    LUEUR_DOWNLOAD_LOG="$HOME/lueur-model-download.log" \
     LUEUR_DEFAULT_MODEL="$DEFAULT_LOCAL_MODEL_ID" \
     GROQ_API_KEY="${GROQ_API_KEY:-}" \
     GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
@@ -382,8 +335,13 @@ ui_ok || echo "⚠️  L'interface Lueur n'est pas servie"
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🤖 Modèles disponibles :"
-echo "   🏠 Local NPU   : Qwen2.5 7B Instruct Q4_0 · Hexagon HTP0"
-echo "                  Qwen3 8B Q4_0 · Hexagon HTP0"
+echo "   🏠 Local NPU   : Phi-4 Mini 3.8B Q4_0"
+echo "                  Qwen2.5 7B Q4_0"
+echo "                  Qwen3 8B Q4_0"
+echo "                  Qwen2.5 Coder 7B Q4_0"
+echo "                  Gemma 3 12B Q4_0"
+echo "                  DeepSeek R1 Qwen 14B Q4_0"
+echo "                  Backend : Hexagon HTP0"
 echo "   ⚡ Groq        : GPT-OSS 120B, Qwen 3.8 27B"
 echo "   ✨ Gemini      : Gemini 3.8 Flash"
 echo "   🇫🇷 Mistral    : Mistral Small"
@@ -396,7 +354,8 @@ echo "                    GPT-OSS 20B, Gemma 4 31B, Muse Glimmer 30B"
 echo "   🟣 Cohere      : Command A+"
 echo "   ▲ Vercel      : Ling 3.0 Flash VL Free"
 echo
-echo "💾 Un seul modèle local NPU est chargé à la fois ; le router bascule automatiquement."
+echo "💾 Un seul modèle local NPU est chargé à la fois ; les autres restent sur le stockage."
+echo "⬇️ Les modèles absents sont téléchargés et repris automatiquement au premier usage."
 echo "☁️ Les modèles cloud n'utilisent pas la RAM du téléphone pour l'inférence."
 echo
 
@@ -443,5 +402,6 @@ echo "🛠️ ngrok UI : http://127.0.0.1:4040"
 echo
 echo "Logs router : tail -f $ROUTER_LOG"
 echo "Logs modèle : tail -f $MODEL_LOG"
+echo "Téléchargements : tail -f $HOME/lueur-model-download.log"
 echo "Logs tunnel : tail -f $TUNNEL_LOG"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
