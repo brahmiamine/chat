@@ -38,6 +38,42 @@ export interface UserMessage {
   createdAt: number;
 }
 
+export type TokenCountSource = 'provider' | 'local' | 'estimated';
+
+export interface GenerationMetrics {
+  /** Provider id handled by the Lueur router, e.g. local, groq, gemini. */
+  provider: string;
+  providerLabel?: string;
+  /** Lueur model id requested by the conversation. */
+  modelId: string;
+  /** Actual upstream model when a router/provider resolved a generic model. */
+  resolvedModel?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  tokenCountSource?: TokenCountSource;
+  /** Request start → first visible token. */
+  ttftMs?: number;
+  /** Request start → terminal state. */
+  durationMs?: number;
+  /** First visible token → terminal state. */
+  generationMs?: number;
+  /** Output throughput based on output tokens / generation time. */
+  tokensPerSecond?: number;
+  /** Time spent waiting before the upstream request started. */
+  queueMs?: number;
+  /** Local llama.cpp context window when known. */
+  contextLimit?: number;
+  finishReason?: string;
+  /** Provider-reported cost when available. Local inference is exactly 0. */
+  costUsd?: number | null;
+  /** Number of SSE viewer re-connections to the same background job. */
+  reconnects?: number;
+  httpStatus?: number;
+  startedAt?: number;
+  completedAt?: number;
+}
+
 export interface AssistantMessage {
   id: string;
   role: 'assistant';
@@ -50,6 +86,8 @@ export interface AssistantMessage {
    * the Termux server even if the browser/tab is closed, then resume later.
    */
   generationId?: string;
+  /** Runtime/token telemetry. Contains metrics only, never prompt contents. */
+  metrics?: GenerationMetrics;
   error?: ChatError | null;
   createdAt: number;
 }
