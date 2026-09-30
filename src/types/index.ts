@@ -242,12 +242,13 @@ export type ModelProviderId =
   | 'nvidia'
   | 'cohere'
   | 'vercel'
+  | 'modal'
   | 'custom';
 
 export interface ModelEntry {
   id: string;
   label: string;
-  /** Provider handled by the Lueur Termux router. */
+  /** Provider handled by the Lueur gateway (Termux or cloud). */
   provider?: ModelProviderId;
   providerLabel?: string;
 }
